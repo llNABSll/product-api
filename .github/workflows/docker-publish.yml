@@ -29,4 +29,4 @@ jobs:
         with:
           context: .
           push: true
-          tags : ghcr.io/llNABSll/product-api/product-api:1.0
+          tags : ghcr.io/llnabsll/product-api/product-api:1.0
