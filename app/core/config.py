@@ -13,5 +13,6 @@ class Settings:
         f"postgresql+psycopg2://{POSTGRES_USER}:{POSTGRES_PASSWORD}@"
         f"{POSTGRES_SERVER}:{POSTGRES_PORT}/{POSTGRES_DB}"
     )
+    RABBITMQ_URL = os.environ["RABBITMQ_URL"]
 
 settings = Settings()
