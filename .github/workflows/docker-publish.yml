@@ -21,12 +21,12 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: xrdctfvygbuhnij,
-          password: xetcryvubinj
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          tags: ghcr.io/iinabsii/product-api:1.0.0
+          tags : ghcr.io/llNABSll/product-api/product-api:1.0
