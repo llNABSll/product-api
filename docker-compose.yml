@@ -1,4 +1,5 @@
 version: "3.9"
+
 services:
   db:
     image: postgres:17
@@ -7,24 +8,61 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    restart: always
+    ports:
+      - "5672:5672"    # AMQP
+      - "15672:15672"  # UI management
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   api-product:
     build: .
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       - .:/app
     ports:
       - "8000:8000"
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_SERVER: db
-      POSTGRES_PORT: 5432
+      # === DB (ta Settings privilégie DATABASE_URL si présent) ===
+      DATABASE_URL: ${DATABASE_URL}
+
+      # === API keys ===
+      API_KEY_READ: ${API_KEY_READ}
+      API_KEY_ADMIN: ${API_KEY_ADMIN}
+
+      # === RabbitMQ ===
+      RABBITMQ_URL: ${RABBITMQ_URL}
+      RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE}
+      RABBITMQ_EXCHANGE_TYPE: ${RABBITMQ_EXCHANGE_TYPE}
+      RABBITMQ_ENABLED: ${RABBITMQ_ENABLED}
+
+      # === Métadonnées app (optionnel) ===
+      APP_TITLE: ${APP_TITLE}
+      APP_VERSION: ${APP_VERSION}
+      APP_DESCRIPTION: ${APP_DESCRIPTION}
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    # (optionnel) si tu as besoin d’un TZ
+    # environment:
+    #   TZ: Europe/Paris
 
 volumes:
   postgres_data:
