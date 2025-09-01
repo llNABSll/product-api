@@ -13,6 +13,8 @@ from app.core.database import Base, engine
 from app.core.rabbitmq import rabbitmq
 from app.core.logging import setup_logging, access_log_middleware
 from app.routers import product_router
+from sqlalchemy import text
+
 
 # --- Logging ---
 # Configure le logging (JSON/texte, rotation, masquage de secrets, request-id)
@@ -28,22 +30,23 @@ REQUEST_LATENCY = Histogram("http_request_duration_seconds", "Latence des requê
 # --- Lifespan (startup/shutdown) ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Démarrage: initialisation DB et RabbitMQ. En prod, préférer des migrations Alembic.
     try:
-        Base.metadata.create_all(bind=engine)
-        logger.info("database ready")
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        logger.info("database connection OK")
     except Exception:
-        logger.exception("database initialization failed")
+        logger.exception("database connectivity check failed")
 
+    # RabbitMQ
     try:
         await rabbitmq.connect()
         logger.info("rabbitmq connected")
     except Exception:
         logger.exception("rabbitmq connect failed; continuing without it")
 
-    yield  # L'application sert des requêtes ici.
+    yield
 
-    # Arrêt: fermeture propre de RabbitMQ (idempotent).
+    # Shutdown MQ
     try:
         await rabbitmq.disconnect()
         logger.info("rabbitmq disconnected")

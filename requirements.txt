@@ -13,6 +13,9 @@ python-dotenv==1.0.1
 # --- Messaging (RabbitMQ, async) ---
 aio-pika==9.4.1
 
+# --- Migrations ---
+alembic==1.13.2
+
 # --- Monitoring / Metrics ---
 prometheus-client==0.20.0
 

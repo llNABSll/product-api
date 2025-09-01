@@ -1,169 +1,157 @@
 # app/core/rabbitmq.py
 from __future__ import annotations
-
-import asyncio
-import json
-import logging
-from typing import Awaitable, Callable, Optional
+import asyncio, json, logging
+from typing import Optional, Awaitable, Callable
 
 import aio_pika
+from aio_pika.abc import AbstractRobustConnection, AbstractRobustChannel, AbstractExchange
+import anyio
 from anyio import from_thread
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+_EX_TYPE_MAP = {
+    "fanout": aio_pika.ExchangeType.FANOUT,
+    "direct": aio_pika.ExchangeType.DIRECT,
+    "topic":  aio_pika.ExchangeType.TOPIC,
+    "headers": aio_pika.ExchangeType.HEADERS,
+}
 
 class RabbitMQ:
-    """
-    Client RabbitMQ basé sur aio-pika.
-    - Connexion robuste (reconnect interne d'aio-pika).
-    - Publisher confirms activés pour garantir la livraison côté broker.
-    - API simple send/publish + helpers JSON.
-    """
-
     def __init__(self) -> None:
-        self.connection: Optional[aio_pika.RobustConnection] = None
-        self.channel: Optional[aio_pika.RobustChannel] = None
-
-    # --- Connexion / fermeture ---
+        self.connection: Optional[AbstractRobustConnection] = None
+        self.channel: Optional[AbstractRobustChannel] = None
+        self.exchange: Optional[AbstractExchange] = None
 
     async def connect(self) -> None:
-        """
-        Établit la connexion et ouvre un channel.
-        Si RABBITMQ_URL est absent, on considère RabbitMQ désactivé (no-op).
-        """
+        """Ouvre une connexion + channel et déclare l'exchange durable."""
         if not settings.RABBITMQ_URL:
-            logger.info("RabbitMQ désactivé (RABBITMQ_URL non défini)")
+            logger.info("RabbitMQ désactivé (URL non définie)")
             return
         try:
             self.connection = await aio_pika.connect_robust(settings.RABBITMQ_URL)
-            # publisher_confirms=True : on attend les acks broker pour chaque publish
             self.channel = await self.connection.channel(publisher_confirms=True)
-            logger.info("RabbitMQ connecté")
+            await self.channel.set_qos(10)
+
+            ex_type = _EX_TYPE_MAP.get(
+                (settings.RABBITMQ_EXCHANGE_TYPE or "fanout").lower(),
+                aio_pika.ExchangeType.FANOUT,
+            )
+            self.exchange = await self.channel.declare_exchange(
+                settings.RABBITMQ_EXCHANGE or "products",
+                ex_type,
+                durable=True,
+            )
+            logger.info(
+                "RabbitMQ prêt (exchange=%s, type=%s)",
+                settings.RABBITMQ_EXCHANGE or "products",
+                settings.RABBITMQ_EXCHANGE_TYPE or "fanout",
+            )
         except Exception:
-            logger.exception("Échec connexion RabbitMQ")
-            # Laisse self.channel = None ; les calls suivants deviendront no-op logués.
+            logger.exception("Échec connexion/initialisation RabbitMQ")
+            self.channel = None
+            self.exchange = None
 
     async def disconnect(self) -> None:
-        """
-        Ferme proprement le channel puis la connexion (idempotent).
-        """
         try:
             if self.channel and not self.channel.is_closed:
                 await self.channel.close()
-                logger.info("RabbitMQ channel fermé")
         except Exception:
             logger.exception("Échec fermeture channel RabbitMQ")
-
         try:
             if self.connection and not self.connection.is_closed:
                 await self.connection.close()
-                logger.info("RabbitMQ connexion fermée")
         except Exception:
             logger.exception("Échec fermeture connexion RabbitMQ")
+        finally:
+            self.exchange = None
+            self.channel = None
+            self.connection = None
 
-    # --- Consommation ---
+    def _ready(self) -> bool:
+        return bool(self.exchange) and bool(self.channel) and not self.channel.is_closed
 
-    async def consume(
-        self,
-        queue_name: str,
-        callback: Callable[[bytes], Optional[Awaitable[None]]],
-        *,
-        prefetch: int = 10,
-        durable: bool = True,
-        requeue_on_error: bool = False,
-    ) -> None:
-        """
-        Consomme les messages d'une queue et appelle `callback(body: bytes)`.
-        - `callback` peut être sync ou async.
-        - `requeue_on_error=False` par défaut pour éviter les boucles poison-message.
-        """
-        if not self.channel:
-            logger.warning("RabbitMQ channel indisponible; consommation ignorée")
+    async def _ensure_ready(self) -> bool:
+        """Reconnecte / redéclare l'exchange si nécessaire."""
+        if self._ready():
+            return True
+        logger.warning("RabbitMQ non prêt; tentative de reconnexion…")
+        try:
+            await self.connect()
+            return self._ready()
+        except Exception:
+            logger.exception("Reconnexion RabbitMQ échouée")
+            return False
+
+    # -------- Publication (payload str / json) --------
+
+    async def publish(self, payload: str) -> None:
+        """Publie sur l'exchange configuré (fanout: routing_key ignorée)."""
+        if not settings.RABBITMQ_URL:
             return
+        if not await self._ensure_ready():
+            logger.warning("RabbitMQ channel indisponible; publish ignoré")
+            return
+        assert self.exchange is not None
+        try:
+            msg = aio_pika.Message(
+                body=payload.encode("utf-8"),
+                content_type="application/json",
+                delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+            )
+            await self.exchange.publish(msg, routing_key="")
+            logger.info("RabbitMQ: message publié (%d bytes)", len(payload))
+        except Exception:
+            logger.exception("RabbitMQ publish échoué")
 
-        await self.channel.set_qos(prefetch_count=prefetch)
-        queue = await self.channel.declare_queue(queue_name, durable=durable)
-        logger.info("Consommation démarrée", extra={"queue": queue_name, "prefetch": prefetch})
+    async def publish_json(self, data: dict) -> None:
+        await self.publish(json.dumps(data))
 
-        async with queue.iterator() as it:
-            async for message in it:
-                # message.process gère ack/nack automatiquement selon les exceptions
-                async with message.process(requeue=requeue_on_error):
-                    try:
-                        result = callback(message.body)
-                        if asyncio.iscoroutine(result):
-                            await result  # support des callbacks async
-                    except Exception:
-                        logger.exception("Erreur callback consommateur", extra={"queue": queue_name})
-                        # lever une exception ici déclenchera nack (requeue selon paramètre)
-                        raise
-
-    # --- Publication ---
+    # -------- Envoi direct vers une queue (optionnel) --------
 
     async def send(self, queue_name: str, payload: str, *, durable: bool = True) -> None:
-        """
-        Envoie un message vers une queue (routing_key = queue_name).
-        """
-        if not self.channel:
-            logger.warning("RabbitMQ channel indisponible; envoi ignoré", extra={"queue": queue_name})
+        if not settings.RABBITMQ_URL:
+            return
+        if not await self._ensure_ready():
+            logger.warning("RabbitMQ channel indisponible; envoi ignoré")
             return
         try:
+            assert self.channel is not None
             await self.channel.declare_queue(queue_name, durable=durable)
             await self.channel.default_exchange.publish(
                 aio_pika.Message(body=payload.encode("utf-8")),
                 routing_key=queue_name,
             )
-            logger.info("Message envoyé", extra={"queue": queue_name, "size": len(payload)})
+            logger.info("RabbitMQ: send -> %s", queue_name)
         except Exception:
-            logger.exception("Échec envoi message", extra={"queue": queue_name})
-
-    async def publish(self, exchange_name: str, payload: str) -> None:
-        """
-        Publie un message sur un exchange (fanout/topic selon config).
-        """
-        if not self.channel:
-            logger.warning("RabbitMQ channel indisponible; publish ignoré", extra={"exchange": exchange_name})
-            return
-        try:
-            # Type d'exchange configurable (fanout par défaut).
-            exchange_type = getattr(aio_pika.ExchangeType, settings.RABBITMQ_EXCHANGE_TYPE.lower(), aio_pika.ExchangeType.FANOUT)
-            exchange = await self.channel.declare_exchange(exchange_name, exchange_type, durable=True)
-            await exchange.publish(aio_pika.Message(body=payload.encode("utf-8")), routing_key="")
-            logger.info("Message publié", extra={"exchange": exchange_name, "size": len(payload)})
-        except Exception:
-            logger.exception("Échec publication message", extra={"exchange": exchange_name})
-
-    # --- Helpers JSON ---
+            logger.exception("RabbitMQ send échoué")
 
     async def send_json(self, queue_name: str, data: dict) -> None:
         await self.send(queue_name, json.dumps(data))
 
-    async def publish_json(self, exchange_name: str, data: dict) -> None:
-        await self.publish(exchange_name, json.dumps(data))
-
-
-# Instance globale (facile à monkeypatcher en tests)
 rabbitmq = RabbitMQ()
 
+# -------- Helpers pour l'app --------
+
+async def publish_event_async(event: str, payload: dict) -> None:
+    """À utiliser depuis un handler async FastAPI."""
+    if not settings.RABBITMQ_URL:
+        return
+    await rabbitmq.publish_json({"event": event, **payload})
 
 def publish_event(event: str, payload: dict) -> None:
     """
-    Helper synchrone pour publier un événement JSON sur l'exchange configuré.
-    - Utilise anyio.from_thread.run lorsqu'on est dans un thread (cas FastAPI sync).
-    - Sinon, lance une boucle asyncio locale (scripts, tests).
-    - No-op si RabbitMQ est désactivé (RABBITMQ_URL absent).
+    À utiliser depuis du code *sync* (ex: dépendances/handlers sync).
+    Planifie la publish sur la loop ASGI si on est dans un thread,
+    sinon lance une loop locale (scripts).
     """
     if not settings.RABBITMQ_URL:
-        return  # no-op en dev/test sans broker
-
-    data = {"event": event, **payload}
-    exchange = settings.RABBITMQ_EXCHANGE or "products"
-
+        return
     try:
-        # Contexte thread (FastAPI sync def) -> exécuter la coroutine sur la loop ASGI
-        from_thread.run(rabbitmq.publish_json, exchange, data)
+        # On est probablement dans un thread (FastAPI sync) -> exécuter sur la loop
+        from_thread.run(publish_event_async, event, payload)
     except RuntimeError:
-        # Pas de loop en cours -> exécuter une loop locale
-        asyncio.run(rabbitmq.publish_json(exchange, data))
+        # Pas de loop active -> loop locale
+        asyncio.run(publish_event_async(event, payload))
