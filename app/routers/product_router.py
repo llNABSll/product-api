@@ -17,7 +17,7 @@ from app.services.product_service import (
 )
 from app.security.security import require_read, require_write
 
-router = APIRouter()
+router = APIRouter(prefix="/products", tags=["produits"])
 logger = logging.getLogger(__name__)
 
 # --- Dépendance DB ---

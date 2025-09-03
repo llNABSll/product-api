@@ -52,7 +52,7 @@ services:
   api-product:
     build: .
     working_dir: /app
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     restart: unless-stopped
     env_file: .env
     environment:
@@ -60,8 +60,8 @@ services:
       DATABASE_URL: ${DATABASE_URL}
 
       # --- Keycloak ---
-      KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER:-http://host.docker.internal:8081/realms/paye-ton-kawa}
-      KEYCLOAK_JWKS_URL: ${KEYCLOAK_JWKS_URL:-http://host.docker.internal:8081/realms/paye-ton-kawa/protocol/openid-connect/certs}
+      KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER}
+      KEYCLOAK_JWKS_URL: ${KEYCLOAK_JWKS_URL}
       ROLE_READ: ${ROLE_READ:-product:read}
       ROLE_WRITE: ${ROLE_WRITE:-product:write}
 
@@ -102,36 +102,37 @@ services:
       - mspr
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=mspr"
 
-      # Public health
+      # === Router public (health) ===
       - "traefik.http.routers.product-public.rule=Path(`/api/product/health`)"
       - "traefik.http.routers.product-public.entrypoints=web"
       - "traefik.http.routers.product-public.priority=100"
       - "traefik.http.routers.product-public.middlewares=product-cors,product-strip"
 
-      # Routes protégées (par l'API elle-même)
+      # Router protégé par oauth2-proxy
       - "traefik.http.routers.product.rule=PathPrefix(`/api/product`)"
       - "traefik.http.routers.product.entrypoints=web"
-      - "traefik.http.routers.product.middlewares=product-cors,product-strip"
+      - "traefik.http.routers.product.middlewares=product-auth,product-cors,product-strip"
       - "traefik.http.services.product.loadbalancer.server.port=8000"
+      - "traefik.docker.network=mspr"
 
-      # OPTIONS preflight sans auth
-      - "traefik.http.routers.product-options.rule=Method(`OPTIONS`) && PathPrefix(`/api/product`)"
-      - "traefik.http.routers.product-options.entrypoints=web"
-      - "traefik.http.routers.product-options.priority=200"
-      - "traefik.http.routers.product-options.middlewares=product-cors,product-strip"
-      - "traefik.http.routers.product-options.service=product"
+      # ForwardAuth -> oauth2-proxy
+      - "traefik.http.middlewares.product-auth.forwardauth.address=http://oauth2-proxy:4180/oauth2/auth"
 
-      # Middlewares CORS & strip
+      # >>> ENVOI le Bearer à oauth2-proxy
+      - "traefik.http.middlewares.product-auth.forwardauth.authRequestHeaders=Authorization"
+
+      # >>> RE-COPIE vers l'API le Bearer + les X-Auth-Request-*
+      - "traefik.http.middlewares.product-auth.forwardauth.authResponseHeaders=Authorization,X-Auth-Request-User,X-Auth-Request-Email,X-Auth-Request-Groups"
+
+      # CORS & Strip
       - "traefik.http.middlewares.product-cors.headers.accessControlAllowOriginList=${ALLOWED_ORIGINS}"
       - "traefik.http.middlewares.product-cors.headers.accessControlAllowMethods=GET,POST,PUT,PATCH,DELETE,OPTIONS"
       - "traefik.http.middlewares.product-cors.headers.accessControlAllowHeaders=Authorization,Content-Type,X-Requested-With"
       - "traefik.http.middlewares.product-cors.headers.accessControlExposeHeaders=X-Request-Id"
       - "traefik.http.middlewares.product-cors.headers.addVaryHeader=true"
       - "traefik.http.middlewares.product-strip.stripprefix.prefixes=/api/product"
-
-      # IMPORTANT : assure le bon réseau pour la LB Traefik
-      - "traefik.docker.network=mspr"
 
 volumes:
   postgres_data:
