@@ -1,0 +1,23 @@
+name: Manual CI - Test & Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: build and test
+        uses: llNABSll/test-and-build-action@main
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          UNIT_TESTS_COMMAND: "echo 'No tests to run'"
+          API_NAME: product-api
+          REPORT_PATH: '**/TESTS-*.xml'

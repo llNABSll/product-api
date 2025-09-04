@@ -1,0 +1,20 @@
+name: PR - Tests & SonarQube
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: ["*"]
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run PR Tests & SonarQube
+        uses: llNABSll/pull-request-action@main
+        with:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          UNIT_TESTS_COMMAND: "echo 'No tests to run'"
+          REPORT_PATH: '**/TESTS-*.xml'
