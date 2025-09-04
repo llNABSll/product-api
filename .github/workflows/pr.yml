@@ -16,5 +16,6 @@ jobs:
         uses: llNABSll/pull-request-action@main
         with:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          UNIT_TESTS_COMMAND: "echo 'No tests to run'"
-          REPORT_PATH: '**/TESTS-*.xml'
+          UNIT_TESTS_COMMAND: coverage run --source=app -m pytest --junitxml=reports/report.xml; coverage xml -o coverage.xml
+          REPORT_PATH: '**reports/report.xml'
+          

@@ -18,6 +18,6 @@ jobs:
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPOSITORY_OWNER: ${{ github.repository_owner }}
-          UNIT_TESTS_COMMAND: "echo 'No tests to run'"
+          UNIT_TESTS_COMMAND: coverage run --source=app -m pytest --junitxml=reports/report.xml; coverage xml -o coverage.xml
           API_NAME: product-api
-          REPORT_PATH: '**/TESTS-*.xml'
+          REPORT_PATH: '**reports/report.xml'
