@@ -10,7 +10,8 @@ from sqlalchemy.orm.exc import StaleDataError
 from app.models.product import Product
 from app.schemas.product_schema import ProductCreate, ProductUpdate
 from app.repositories import product_repository as repo
-from app.core.rabbitmq import publish_event
+from app.infra.events.rabbitmq import rabbitmq
+from app.infra.events.contracts import MessagePublisher
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +39,9 @@ class ProductService:
       en exceptions domaine plus parlantes pour la couche API.
     """
 
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, mq: MessagePublisher):
         self.db = db
+        self.mq = mq
 
     # ----- READ -----
     def get(self, product_id: int) -> Product:
@@ -89,7 +91,7 @@ class ProductService:
         return rows
 
     # ----- WRITE -----
-    def create(self, data: ProductCreate) -> Product:
+    async def create(self, data: ProductCreate) -> Product:
         if repo.get_by_sku(self.db, data.sku):
             logger.debug("création refusée: SKU déjà utilisé", extra={"sku": data.sku})
             raise SKUAlreadyExistsError("SKU déjà utilisé")
@@ -99,11 +101,11 @@ class ProductService:
             logger.debug("création refusée (integrity error)", extra={"sku": data.sku})
             raise SKUAlreadyExistsError("SKU déjà utilisé")
 
-        publish_event("product.created", {"id": product.id, "sku": product.sku, "name": product.name})
+        await rabbitmq.publish_message("product.created", {"id": product.id, "sku": product.sku, "name": product.name})
         logger.info("produit créé", extra={"id": product.id, "sku": product.sku})
         return product
 
-    def update(
+    async def update(
         self,
         product_id: int,
         data: ProductUpdate,
@@ -131,22 +133,22 @@ class ProductService:
             logger.debug("conflit de version (stale data)", extra={"id": product_id})
             raise ConcurrencyConflictError("Le produit a été modifié entre-temps")
 
-        publish_event("product.updated", {"id": product.id, "sku": product.sku, "name": product.name})
+        await rabbitmq.publish_message("product.updated", {"id": product.id, "sku": product.sku, "name": product.name})
         logger.info("produit mis à jour", extra={"id": product.id, "sku": product.sku, "version": product.version})
         return product
 
-    def delete(self, product_id: int) -> Product:
+    async def delete(self, product_id: int) -> Product:
         product = repo.delete_product(self.db, product_id)
         if not product:
             logger.debug("suppression: produit introuvable", extra={"id": product_id})
             raise NotFoundError("Produit non trouvé")
 
-        publish_event("product.deleted", {"id": product.id, "sku": product.sku})
+        await rabbitmq.publish_message("product.deleted", {"id": product.id, "sku": product.sku})
         logger.info("produit supprimé", extra={"id": product.id, "sku": product.sku})
         return product
 
     # ----- Règles métier -----
-    def adjust_stock(self, product_id: int, delta: int) -> Product:
+    async def adjust_stock(self, product_id: int, delta: int) -> Product:
         product = self.get(product_id)
         new_qty = (product.quantity or 0) + int(delta)
         if new_qty < 0:
@@ -157,21 +159,21 @@ class ProductService:
             raise InsufficientStockError("Stock insuffisant")
 
         logger.debug("ajustement stock", extra={"id": product_id, "old_qty": product.quantity, "delta": delta})
-        return self.update(product_id, ProductUpdate(quantity=new_qty))
+        return await self.update(product_id, ProductUpdate(quantity=new_qty))
 
-    def set_active(self, product_id: int, is_active: bool) -> Product:
-        product = self.update(product_id, ProductUpdate(is_active=is_active))
+    async def set_active(self, product_id: int, is_active: bool) -> Product:
+        product = await self.update(product_id, ProductUpdate(is_active=is_active))
         event = "product.activated" if is_active else "product.deactivated"
-        publish_event(event, {"id": product.id, "sku": product.sku})
+        await rabbitmq.publish_message(event, {"id": product.id, "sku": product.sku})
         logger.info("changement d'état actif", extra={"id": product.id, "sku": product.sku, "is_active": is_active})
         return product
 
-    def upsert_by_sku(self, data: ProductCreate) -> Product:
+    async def upsert_by_sku(self, data: ProductCreate) -> Product:
         existing = repo.get_by_sku(self.db, data.sku)
         if not existing:
             logger.debug("upsert: création (SKU inexistant)", extra={"sku": data.sku})
-            return self.create(data)
+            return await self.create(data)
 
         logger.debug("upsert: mise à jour (SKU existant)", extra={"id": existing.id, "sku": existing.sku})
         patch = ProductUpdate(**data.model_dump())
-        return self.update(existing.id, patch)
+        return await self.update(existing.id, patch)
