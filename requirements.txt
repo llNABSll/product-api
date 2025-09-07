@@ -7,7 +7,7 @@ SQLAlchemy==2.0.34
 psycopg2-binary==2.9.9
 
 # --- Validation & config ---
-pydantic==2.9.2
+pydantic==2.11.7
 python-dotenv==1.0.1
 
 # --- Messaging (RabbitMQ, async) ---
