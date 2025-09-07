@@ -1,0 +1,143 @@
+services:
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - mspr
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    restart: unless-stopped
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: app
+      RABBITMQ_DEFAULT_PASS: app
+      RABBITMQ_DEFAULT_VHOST: /
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks:
+      - mspr
+
+  migrate:
+    build: .
+    working_dir: /app
+    command: bash -lc "alembic upgrade head"
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    networks:
+      - mspr
+
+  api-product:
+    build: .
+    working_dir: /app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # --- DB ---
+      DATABASE_URL: ${DATABASE_URL}
+
+      # --- Keycloak ---
+      KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER}
+      KEYCLOAK_JWKS_URL: ${KEYCLOAK_JWKS_URL}
+      ROLE_READ: ${ROLE_READ:-product:read}
+      ROLE_WRITE: ${ROLE_WRITE:-product:write}
+
+      # --- RabbitMQ ---
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://app:app@rabbitmq:5672/%2F}
+      RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE:-products}
+      RABBITMQ_EXCHANGE_TYPE: ${RABBITMQ_EXCHANGE_TYPE:-fanout}
+
+      # --- Métadonnées app ---
+      APP_TITLE: ${APP_TITLE:-Product API - PayeTonKawa}
+      APP_VERSION: ${APP_VERSION:-1.0.0}
+      APP_DESCRIPTION: ${APP_DESCRIPTION:-API Produits CRUD}
+
+      # --- Logging ---
+      LOG_DIR: /app/logs
+      LOG_FILE: app.log
+      LOG_ACCESS_FILE: access.log
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      LOG_MAX_BYTES: ${LOG_MAX_BYTES:-10485760}
+      LOG_BACKUP_COUNT: ${LOG_BACKUP_COUNT:-5}
+      LOG_ENABLE_CONSOLE: ${LOG_ENABLE_CONSOLE:-true}
+      REQUEST_ID_HEADER: ${REQUEST_ID_HEADER:-X-Request-ID}
+
+    volumes:
+      - .:/app
+      - logs:/app/logs
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - mspr
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=mspr"
+
+      # === Router public (health) ===
+      - "traefik.http.routers.product-public.rule=Path(`/api/product/health`)"
+      - "traefik.http.routers.product-public.entrypoints=web"
+      - "traefik.http.routers.product-public.priority=100"
+      - "traefik.http.routers.product-public.middlewares=product-cors,product-strip"
+
+      # Router protégé par oauth2-proxy
+      - "traefik.http.routers.product.rule=PathPrefix(`/api/product`)"
+      - "traefik.http.routers.product.entrypoints=web"
+      - "traefik.http.routers.product.middlewares=product-auth,product-cors,product-strip"
+      - "traefik.http.services.product.loadbalancer.server.port=8000"
+      - "traefik.docker.network=mspr"
+
+      # ForwardAuth -> oauth2-proxy
+      - "traefik.http.middlewares.product-auth.forwardauth.address=http://oauth2-proxy:4180/oauth2/auth"
+
+      # >>> ENVOI le Bearer à oauth2-proxy
+      - "traefik.http.middlewares.product-auth.forwardauth.authRequestHeaders=Authorization"
+
+      # >>> RE-COPIE vers l'API le Bearer + les X-Auth-Request-*
+      - "traefik.http.middlewares.product-auth.forwardauth.authResponseHeaders=Authorization,X-Auth-Request-User,X-Auth-Request-Email,X-Auth-Request-Groups"
+
+      # CORS & Strip
+      - "traefik.http.middlewares.product-cors.headers.accessControlAllowOriginList=${ALLOWED_ORIGINS}"
+      - "traefik.http.middlewares.product-cors.headers.accessControlAllowMethods=GET,POST,PUT,PATCH,DELETE,OPTIONS"
+      - "traefik.http.middlewares.product-cors.headers.accessControlAllowHeaders=Authorization,Content-Type,X-Requested-With"
+      - "traefik.http.middlewares.product-cors.headers.accessControlExposeHeaders=X-Request-Id"
+      - "traefik.http.middlewares.product-cors.headers.addVaryHeader=true"
+      - "traefik.http.middlewares.product-strip.stripprefix.prefixes=/api/product"
+
+volumes:
+  postgres_data:
+  logs:
+
+networks:
+  mspr:
+    external: true
