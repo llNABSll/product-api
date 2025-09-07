@@ -12,6 +12,7 @@ __pycache__/
 venv/
 ENV/
 env/
+.venv/
 
 # Données Postgres Docker
 postgres_data/
@@ -23,9 +24,6 @@ pgdata/
 # Pytest
 .pytest_cache/
 .coverage
-
-# Alembic (tu peux garder le dossier, mais ignorer les fichiers de conf personnalisés)
-alembic.ini
 
 # VSCode et autres IDE
 .vscode/
