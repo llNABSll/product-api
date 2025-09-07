@@ -3,7 +3,7 @@ fastapi==0.115.0
 uvicorn[standard]==0.30.5
 
 # --- ORM / DB ---
-SQLAlchemy==2.0.34
+SQLAlchemy==2.0.43
 psycopg2-binary==2.9.9
 
 # --- Validation & config ---
