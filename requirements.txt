@@ -8,7 +8,7 @@ psycopg2-binary==2.9.9
 
 # --- Validation & config ---
 pydantic==2.9.2
-python-dotenv==1.0.1
+python-dotenv==1.1.1
 
 # --- Messaging (RabbitMQ, async) ---
 aio-pika==9.4.1
