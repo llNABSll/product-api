@@ -1,5 +1,5 @@
 # --- Core API ---
-fastapi==0.115.0
+fastapi==0.116.1
 uvicorn[standard]==0.30.5
 
 # --- ORM / DB ---
