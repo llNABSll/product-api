@@ -56,7 +56,7 @@ Ce microservice fait partie d’un ensemble (API Clients, API Commandes, message
 Les interactions avec RabbitMQ pour la synchronisation entre services peuvent être ajoutées/modifiées selon les besoins.
 
 ## Auteurs
-GIRARD ANthony, FIACSAN Nicolas, QUACH Simon, PRUJA Benjamin
+GIRARD Anthony, FIACSAN Nicolas, QUACH Simon, PRUJA Benjamin
 
 Projet MSPR TPRE814 — EPSI 2024-2025
 
