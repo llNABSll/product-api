@@ -1,0 +1,40 @@
+# Empêche de push les variables d’environnement sensibles
+.env
+.env.*
+
+# Fichiers/dossiers Python à ignorer
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Dossiers de virtualenv locaux (si tu en utilises un jour)
+venv/
+ENV/
+env/
+
+# Données Postgres Docker
+postgres_data/
+pgdata/
+
+# Logs et caches
+*.log
+
+# Pytest
+.pytest_cache/
+.coverage
+
+# Alembic (tu peux garder le dossier, mais ignorer les fichiers de conf personnalisés)
+alembic.ini
+
+# VSCode et autres IDE
+.vscode/
+.idea/
+*.swp
+
+# Système
+.DS_Store
+Thumbs.db
+
+# Docker Compose overrides
+docker-compose.override.yml
