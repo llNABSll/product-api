@@ -13,6 +13,7 @@ from app.services.product_service import (
 )
 from app.models.product import Product
 from app.schemas.product_schema import ProductCreate, ProductUpdate
+from unittest.mock import AsyncMock
 
 
 # ---------- Fixtures ----------
@@ -22,8 +23,9 @@ def fake_db():
 
 @pytest.fixture
 def fake_mq():
-    """Mock RabbitMQ ignoré dans les tests unitaires"""
-    return MagicMock()
+    mq = MagicMock()
+    mq.publish_message = AsyncMock(return_value=None)  # <- awaitable
+    return mq
 
 @pytest.fixture
 def product():

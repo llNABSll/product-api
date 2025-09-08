@@ -10,21 +10,28 @@ from sqlalchemy.orm.exc import StaleDataError
 from app.models.product import Product
 from app.schemas.product_schema import ProductCreate, ProductUpdate
 from app.repositories import product_repository as repo
-from app.infra.events.rabbitmq import rabbitmq
-from app.infra.events.contracts import MessagePublisher
+from app.infra.events.contracts import MessagePublisher 
 
 logger = logging.getLogger(__name__)
+
+# ---------- Messages constants ----------
+PRODUCT_NOT_FOUND_MSG = "Produit non trouvé"
+SKU_ALREADY_EXISTS_MSG = "SKU déjà utilisé"
+INSUFFICIENT_STOCK_MSG = "Stock insuffisant"
+VERSION_CONFLICT_MSG = "Le produit a été modifié entre-temps"
 
 # ---------- Exceptions domaine ----------
 class NotFoundError(Exception):
     pass
 
+
 class SKUAlreadyExistsError(Exception):
     pass
 
+
 class ConcurrencyConflictError(Exception):
     """Optimistic locking: l'entité a été modifiée ailleurs pendant la MAJ."""
-    pass
+
 
 class InsufficientStockError(Exception):
     pass
@@ -41,14 +48,14 @@ class ProductService:
 
     def __init__(self, db: Session, mq: MessagePublisher):
         self.db = db
-        self.mq = mq
+        self.mq = mq 
 
     # ----- READ -----
     def get(self, product_id: int) -> Product:
         p = repo.get_product(self.db, product_id)
         if not p:
             logger.debug("produit introuvable", extra={"id": product_id})
-            raise NotFoundError("Produit non trouvé")
+            raise NotFoundError(PRODUCT_NOT_FOUND_MSG)
         logger.debug("produit lu", extra={"id": p.id, "sku": p.sku})
         return p
 
@@ -86,7 +93,14 @@ class ProductService:
         )
         logger.debug(
             "liste produits (service)",
-            extra={"count": len(rows), "q": q, "category": category, "brand": brand, "skip": skip, "limit": limit},
+            extra={
+                "count": len(rows),
+                "q": q,
+                "category": category,
+                "brand": brand,
+                "skip": skip,
+                "limit": limit,
+            },
         )
         return rows
 
@@ -94,14 +108,16 @@ class ProductService:
     async def create(self, data: ProductCreate) -> Product:
         if repo.get_by_sku(self.db, data.sku):
             logger.debug("création refusée: SKU déjà utilisé", extra={"sku": data.sku})
-            raise SKUAlreadyExistsError("SKU déjà utilisé")
+            raise SKUAlreadyExistsError(SKU_ALREADY_EXISTS_MSG)
         try:
             product = repo.create_product(self.db, data)
         except IntegrityError:
             logger.debug("création refusée (integrity error)", extra={"sku": data.sku})
-            raise SKUAlreadyExistsError("SKU déjà utilisé")
+            raise SKUAlreadyExistsError(SKU_ALREADY_EXISTS_MSG)
 
-        await rabbitmq.publish_message("product.created", {"id": product.id, "sku": product.sku, "name": product.name})
+        await self.mq.publish_message(
+            "product.created", {"id": product.id, "sku": product.sku, "name": product.name}
+        )
         logger.info("produit créé", extra={"id": product.id, "sku": product.sku})
         return product
 
@@ -110,40 +126,49 @@ class ProductService:
         product_id: int,
         data: ProductUpdate,
         *,
-        expected_version: Optional[int] = None
+        expected_version: Optional[int] = None,
     ) -> Product:
         current = repo.get_product(self.db, product_id)
         if not current:
             logger.debug("mise à jour: produit introuvable", extra={"id": product_id})
-            raise NotFoundError("Produit non trouvé")
+            raise NotFoundError(PRODUCT_NOT_FOUND_MSG)
 
         if expected_version is not None and current.version != expected_version:
             logger.debug(
                 "conflit de version (pré-check)",
-                extra={"id": product_id, "expected": expected_version, "actual": current.version},
+                extra={
+                    "id": product_id,
+                    "expected": expected_version,
+                    "actual": current.version,
+                },
             )
-            raise ConcurrencyConflictError("Le produit a été modifié entre-temps")
+            raise ConcurrencyConflictError(VERSION_CONFLICT_MSG)
 
         try:
             product = repo.update_product(self.db, product_id, data)
         except IntegrityError:
             logger.debug("mise à jour refusée (integrity error)", extra={"id": product_id})
-            raise SKUAlreadyExistsError("SKU déjà utilisé")
+            raise SKUAlreadyExistsError(SKU_ALREADY_EXISTS_MSG)
         except StaleDataError:
             logger.debug("conflit de version (stale data)", extra={"id": product_id})
-            raise ConcurrencyConflictError("Le produit a été modifié entre-temps")
+            raise ConcurrencyConflictError(VERSION_CONFLICT_MSG)
 
-        await rabbitmq.publish_message("product.updated", {"id": product.id, "sku": product.sku, "name": product.name})
-        logger.info("produit mis à jour", extra={"id": product.id, "sku": product.sku, "version": product.version})
+        await self.mq.publish_message(
+            "product.updated", {"id": product.id, "sku": product.sku, "name": product.name}
+        )
+        logger.info(
+            "produit mis à jour",
+            extra={"id": product.id, "sku": product.sku, "version": product.version},
+        )
         return product
 
     async def delete(self, product_id: int) -> Product:
         product = repo.delete_product(self.db, product_id)
         if not product:
             logger.debug("suppression: produit introuvable", extra={"id": product_id})
-            raise NotFoundError("Produit non trouvé")
+            raise NotFoundError(PRODUCT_NOT_FOUND_MSG)
 
-        await rabbitmq.publish_message("product.deleted", {"id": product.id, "sku": product.sku})
+        await self.mq.publish_message("product.deleted", {"id": product.id, "sku": product.sku})
         logger.info("produit supprimé", extra={"id": product.id, "sku": product.sku})
         return product
 
@@ -156,16 +181,22 @@ class ProductService:
                 "ajustement stock refusé (stock insuffisant)",
                 extra={"id": product_id, "qty": product.quantity, "delta": delta},
             )
-            raise InsufficientStockError("Stock insuffisant")
+            raise InsufficientStockError(INSUFFICIENT_STOCK_MSG)
 
-        logger.debug("ajustement stock", extra={"id": product_id, "old_qty": product.quantity, "delta": delta})
+        logger.debug(
+            "ajustement stock",
+            extra={"id": product_id, "old_qty": product.quantity, "delta": delta},
+        )
         return await self.update(product_id, ProductUpdate(quantity=new_qty))
 
     async def set_active(self, product_id: int, is_active: bool) -> Product:
         product = await self.update(product_id, ProductUpdate(is_active=is_active))
         event = "product.activated" if is_active else "product.deactivated"
-        await rabbitmq.publish_message(event, {"id": product.id, "sku": product.sku})
-        logger.info("changement d'état actif", extra={"id": product.id, "sku": product.sku, "is_active": is_active})
+        await self.mq.publish_message(event, {"id": product.id, "sku": product.sku})
+        logger.info(
+            "changement d'état actif",
+            extra={"id": product.id, "sku": product.sku, "is_active": is_active},
+        )
         return product
 
     async def upsert_by_sku(self, data: ProductCreate) -> Product:
