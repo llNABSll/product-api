@@ -146,3 +146,56 @@ def test_set_active(client):
     assert r.status_code == 200
     mock_service = app.dependency_overrides[product_routes.get_product_service]()
     mock_service.set_active.assert_awaited()
+
+@pytest.mark.asyncio
+async def test_create_conflict(client):
+    mock_service = app.dependency_overrides[product_routes.get_product_service]()
+    mock_service.create.side_effect = product_service.SKUAlreadyExistsError()
+    r = client.post("/products/", json={"sku": "S1", "name": "X", "price": 10.0, "quantity": 1})
+    assert r.status_code == 409
+
+def test_update_if_match_invalid(client):
+    r = client.put("/products/1", json={"name": "X"}, headers={"If-Match": "abc"})
+    assert r.status_code == 400
+    assert r.json()["detail"] == "If-Match doit être un entier"
+
+@pytest.mark.asyncio
+async def test_update_not_found(client):
+    mock_service = app.dependency_overrides[product_routes.get_product_service]()
+    mock_service.update.side_effect = product_service.NotFoundError()
+    r = client.put("/products/1", json={"name": "X"})
+    assert r.status_code == 404
+
+@pytest.mark.asyncio
+async def test_update_sku_conflict(client):
+    mock_service = app.dependency_overrides[product_routes.get_product_service]()
+    mock_service.update.side_effect = product_service.SKUAlreadyExistsError()
+    r = client.put("/products/1", json={"name": "X"})
+    assert r.status_code == 409
+
+def test_read_by_sku_not_found(client):
+    mock_service = app.dependency_overrides[product_routes.get_product_service]()
+    mock_service.get_by_sku.return_value = None
+    r = client.get("/products/sku/doesnotexist")
+    assert r.status_code == 404
+
+@pytest.mark.asyncio
+async def test_adjust_stock_not_found(client):
+    mock_service = app.dependency_overrides[product_routes.get_product_service]()
+    mock_service.adjust_stock.side_effect = product_service.NotFoundError()
+    r = client.patch("/products/1/stock?delta=5")
+    assert r.status_code == 404
+
+@pytest.mark.asyncio
+async def test_adjust_stock_conflict(client):
+    mock_service = app.dependency_overrides[product_routes.get_product_service]()
+    mock_service.adjust_stock.side_effect = product_service.InsufficientStockError()
+    r = client.patch("/products/1/stock?delta=-10")
+    assert r.status_code == 409
+
+@pytest.mark.asyncio
+async def test_set_active_not_found(client):
+    mock_service = app.dependency_overrides[product_routes.get_product_service]()
+    mock_service.set_active.side_effect = product_service.NotFoundError()
+    r = client.patch("/products/1/active?is_active=true")
+    assert r.status_code == 404
