@@ -8,6 +8,9 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.schemas.product_schema import ProductCreate, ProductUpdate, ProductResponse
+from app.security.security import require_read, require_write
+
+# ⚠️ Import du service + exceptions métier
 from app.services.product_service import (
     ProductService,
     NotFoundError,
@@ -15,19 +18,26 @@ from app.services.product_service import (
     ConcurrencyConflictError,
     InsufficientStockError,
 )
-from app.security.security import require_read, require_write
-from app.infra.events.rabbitmq import rabbitmq
+
+# ⚠️ Import de l’instance RabbitMQ créée dans main.py
+from app.main import rabbitmq
 
 router = APIRouter(prefix="/products", tags=["produits"])
 logger = logging.getLogger(__name__)
 
+# ---------- Messages ----------
+PRODUCT_NOT_FOUND_MSG = "Produit non trouvé"
+SKU_ALREADY_EXISTS_MSG = "SKU déjà utilisé"
+INSUFFICIENT_STOCK_MSG = "Stock insuffisant"
+VERSION_CONFLICT_MSG = "Conflit de version : rechargez puis réessayez"
 
-# --- Dépendance pour ProductService ---
+
+# ---------- Dépendance ProductService ----------
 def get_product_service(db: Session = Depends(get_db)) -> ProductService:
     """
     Fournit un ProductService par requête avec :
-      - une session DB (scopée à la requête),
-      - une instance RabbitMQ globale et réutilisée.
+      - une session DB scopée à la requête,
+      - l’instance RabbitMQ globale fournie par main.py.
     """
     return ProductService(db, rabbitmq)
 
@@ -51,7 +61,7 @@ async def create(
         return created
     except SKUAlreadyExistsError:
         logger.debug("create conflict: sku already exists", extra={"sku": product.sku})
-        raise HTTPException(status_code=409, detail="SKU déjà utilisé")
+        raise HTTPException(status_code=409, detail=SKU_ALREADY_EXISTS_MSG)
 
 
 @router.get(
@@ -100,7 +110,7 @@ def read(product_id: int, svc: ProductService = Depends(get_product_service)):
         return svc.get(product_id)
     except NotFoundError:
         logger.debug("product not found", extra={"id": product_id})
-        raise HTTPException(status_code=404, detail="Produit non trouvé")
+        raise HTTPException(status_code=404, detail=PRODUCT_NOT_FOUND_MSG)
 
 
 @router.put(
@@ -125,11 +135,11 @@ async def update(
         logger.info("product updated", extra={"id": product_id, "version": updated.version})
         return updated
     except NotFoundError:
-        raise HTTPException(status_code=404, detail="Produit non trouvé")
+        raise HTTPException(status_code=404, detail=PRODUCT_NOT_FOUND_MSG)
     except SKUAlreadyExistsError:
-        raise HTTPException(status_code=409, detail="SKU déjà utilisé")
+        raise HTTPException(status_code=409, detail=SKU_ALREADY_EXISTS_MSG)
     except ConcurrencyConflictError:
-        raise HTTPException(status_code=409, detail="Conflit de version : rechargez puis réessayez")
+        raise HTTPException(status_code=409, detail=VERSION_CONFLICT_MSG)
 
 
 @router.delete(
@@ -142,7 +152,7 @@ async def delete(product_id: int, svc: ProductService = Depends(get_product_serv
     try:
         return await svc.delete(product_id)
     except NotFoundError:
-        raise HTTPException(status_code=404, detail="Produit non trouvé")
+        raise HTTPException(status_code=404, detail=PRODUCT_NOT_FOUND_MSG)
 
 
 # ===================== Extras =====================
@@ -156,7 +166,7 @@ def read_by_sku(sku: str, svc: ProductService = Depends(get_product_service)):
     """Récupère un produit par SKU exact (sécurité : rôle lecture requis)."""
     product = svc.get_by_sku(sku)
     if not product:
-        raise HTTPException(status_code=404, detail="Produit non trouvé")
+        raise HTTPException(status_code=404, detail=PRODUCT_NOT_FOUND_MSG)
     return product
 
 
@@ -174,9 +184,9 @@ async def adjust_stock(
     try:
         return await svc.adjust_stock(product_id, delta)
     except NotFoundError:
-        raise HTTPException(status_code=404, detail="Produit non trouvé")
+        raise HTTPException(status_code=404, detail=PRODUCT_NOT_FOUND_MSG)
     except InsufficientStockError:
-        raise HTTPException(status_code=409, detail="Stock insuffisant")
+        raise HTTPException(status_code=409, detail=INSUFFICIENT_STOCK_MSG)
 
 
 @router.patch(
@@ -193,4 +203,4 @@ async def set_active(
     try:
         return await svc.set_active(product_id, is_active)
     except NotFoundError:
-        raise HTTPException(status_code=404, detail="Produit non trouvé")
+        raise HTTPException(status_code=404, detail=PRODUCT_NOT_FOUND_MSG)

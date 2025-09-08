@@ -20,6 +20,12 @@ def test_roles_from_claims_realm_and_resource():
     assert {"realm:admin", "product:read", "user", "custom:role"} <= roles
 
 
+# ----- _Verifier -----
+def test_verifier_init_missing_settings(monkeypatch):
+    with pytest.raises(RuntimeError):
+        security._Verifier("", "")
+
+
 # ----- require_user (gateway mode) -----
 def test_require_user_gateway_mode():
     ctx = security.require_user(
@@ -42,16 +48,25 @@ def test_require_user_gateway_groups_empty():
 
 
 def test_require_user_gateway_groups_invalid_type():
-    # Simule un Header object ou mauvais type
     ctx = security.require_user(
         x_auth_request_user="bob",
-        x_auth_request_groups=123  # devrait être ignoré
+        x_auth_request_groups=123  # mauvais type → ignoré
     )
     assert ctx.roles == []
 
 
+def test_require_user_gateway_user_invalid_type():
+    # Ici x_auth_request_user est un int, donc invalid → None → pas de creds → Unauthorized
+    with pytest.raises(HTTPException) as e:
+        security.require_user(
+            x_auth_request_user=123,
+            x_auth_request_groups="product:read"
+        )
+    assert e.value.status_code == 401
+    assert "Unauthorized" in e.value.detail
+
 # ----- require_user (JWT mode) -----
-def test_require_user_jwt_valid(monkeypatch):
+def test_require_user_jwt_valid_with_username(monkeypatch):
     class FakeVerifier:
         def decode(self, token):
             return {
@@ -69,6 +84,31 @@ def test_require_user_jwt_valid(monkeypatch):
     assert "product:read" in ctx.roles
 
 
+def test_require_user_jwt_valid_with_sub(monkeypatch):
+    class FakeVerifier:
+        def decode(self, token):
+            return {"sub": "user123", "roles": []}
+
+    monkeypatch.setattr(security, "_get_verifier", lambda: FakeVerifier())
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="tok")
+
+    ctx = security.require_user(creds=creds)
+    assert ctx.user == "user123"
+    assert ctx.email is None
+
+
+def test_require_user_jwt_valid_unknown(monkeypatch):
+    class FakeVerifier:
+        def decode(self, token):
+            return {}
+
+    monkeypatch.setattr(security, "_get_verifier", lambda: FakeVerifier())
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="tok")
+
+    ctx = security.require_user(creds=creds)
+    assert ctx.user == "unknown"
+
+
 def test_require_user_jwt_invalid(monkeypatch, caplog):
     class FakeVerifier:
         def decode(self, token):
@@ -84,6 +124,13 @@ def test_require_user_jwt_invalid(monkeypatch, caplog):
     assert "JWT invalide" in caplog.text
 
 
+def test_require_user_jwt_wrong_scheme():
+    creds = HTTPAuthorizationCredentials(scheme="Basic", credentials="tok")
+    with pytest.raises(HTTPException):
+        security.require_user(creds=creds)
+
+
+# ----- require_user (no credentials) -----
 def test_require_user_no_credentials():
     with pytest.raises(HTTPException) as e:
         security.require_user()
@@ -101,6 +148,7 @@ def test_require_read_forbidden():
     with pytest.raises(HTTPException) as e:
         security.require_read(ctx)
     assert e.value.status_code == 403
+    assert security._ROLE_READ in e.value.detail
 
 
 def test_require_write_ok():
@@ -113,3 +161,4 @@ def test_require_write_forbidden():
     with pytest.raises(HTTPException) as e:
         security.require_write(ctx)
     assert e.value.status_code == 403
+    assert security._ROLE_WRITE in e.value.detail

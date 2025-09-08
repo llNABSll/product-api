@@ -1,27 +1,24 @@
-# tests/test_infra.py
-import pytest
+import asyncio
 import json
 import logging
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
-# Configure logging for this test module
-@pytest.fixture(autouse=True, scope="module")
-def configure_logging():
-    logging.basicConfig(level=logging.DEBUG)
-    yield
-
+import pytest
 import aio_pika
 
 from app.infra.events import contracts
 from app.infra.events.rabbitmq import RabbitMQ, start_consumer
 
 
-# ---------- contracts.py ----------
+@pytest.fixture(autouse=True, scope="module")
+def configure_logging():
+    logging.basicConfig(level=logging.DEBUG)
+    yield
+
 
 def test_message_publisher_protocol():
     class DummyPublisher:
-        async def publish_message(self, routing_key: str, message: dict) -> None:
+        async def publish_message(self, routing_key: str, message: dict) -> str:
             return f"{routing_key}:{message}"
 
     pub: contracts.MessagePublisher = DummyPublisher()
@@ -37,20 +34,17 @@ def test_message_consumer_protocol():
     cons: contracts.MessageConsumer = DummyConsumer()
 
     async def handler(payload, rk):
-        assert payload["msg"] == "ok"
+        assert payload == {"msg": "ok"}
         assert rk == "rk"
 
     asyncio.run(cons.start_consumer(None, None, None, queue_name="q", patterns=["rk"], handler=handler))
 
-
-# ---------- rabbitmq.py ----------
 
 @pytest.mark.asyncio
 async def test_connect_and_disconnect():
     fake_connection = AsyncMock()
     fake_channel = AsyncMock()
     fake_exchange = AsyncMock()
-
     fake_connection.channel.return_value = fake_channel
     fake_channel.declare_exchange.return_value = fake_exchange
 
@@ -61,7 +55,6 @@ async def test_connect_and_disconnect():
         assert mq.channel is fake_channel
         assert mq.exchange is fake_exchange
 
-        # simuler ouverts
         mq.channel.is_closed = False
         mq.connection.is_closed = False
 
@@ -82,12 +75,12 @@ async def test_disconnect_handles_exceptions(caplog):
 
     caplog.set_level(logging.ERROR)
     await mq.disconnect()
-    assert "Failed to close" in caplog.text
+    assert "Failed to close RabbitMQ channel" in caplog.text
+    assert "Failed to close RabbitMQ connection" in caplog.text
 
 
 @pytest.mark.asyncio
 async def test_publish_message_success():
-    # Le mock doit spécifier que sa méthode `publish` est aussi un mock asynchrone
     fake_exchange = AsyncMock(publish=AsyncMock())
     mq = RabbitMQ()
     mq.exchange = fake_exchange
@@ -104,7 +97,6 @@ async def test_publish_message_success():
 async def test_publish_message_no_exchange(caplog):
     mq = RabbitMQ()
     mq.exchange = None
-    # On doit cibler le logger spécifique utilisé par le module rabbitmq
     with caplog.at_level(logging.ERROR, logger="app.infra.events.rabbitmq"):
         await mq.publish_message("rk", {"x": 1})
     assert "Cannot publish" in caplog.text
@@ -112,32 +104,49 @@ async def test_publish_message_no_exchange(caplog):
 
 @pytest.mark.asyncio
 async def test_publish_message_exception(caplog):
-    # Le mock doit spécifier que sa méthode `publish` est aussi un mock asynchrone
     fake_exchange = AsyncMock(publish=AsyncMock(side_effect=Exception("boom")))
     mq = RabbitMQ()
     mq.exchange = fake_exchange
     mq.exchange_type = aio_pika.ExchangeType.TOPIC
-    # On doit cibler le logger spécifique utilisé par le module rabbitmq
     with caplog.at_level(logging.ERROR, logger="app.infra.events.rabbitmq"):
         await mq.publish_message("rk", {"fail": True})
     assert "Failed to publish" in caplog.text
 
 
-# ---------- helpers pour consumer ----------
-
 class FakeAsyncIterator:
-    """Simule queue.iterator() comme un vrai async context manager"""
     def __init__(self, messages=None):
-        self._messages = messages or []
+        self._messages = list(messages or [])
 
     async def __aenter__(self):
-        async def gen():
-            for m in self._messages:
-                yield m
-        return gen()
+        return self
 
     async def __aexit__(self, exc_type, exc, tb):
         return False
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._messages:
+            raise StopAsyncIteration
+        return self._messages.pop(0)
+
+
+
+class FakeMessage:
+    def __init__(self, body: dict, routing_key: str = "rk"):
+        self.routing_key = routing_key
+        self.body = json.dumps(body).encode()
+
+    def process(self):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
 
 
 @pytest.mark.asyncio
@@ -149,27 +158,28 @@ async def test_start_consumer_topic():
     fake_connection.channel.return_value = fake_channel
     fake_exchange = AsyncMock()
 
-    fake_message = MagicMock()
-    fake_message.routing_key = "rk"
-    fake_message.body = json.dumps({"foo": "bar"}).encode()
-    fake_message.process.return_value.__aenter__ = AsyncMock()
-    fake_message.process.return_value.__aexit__ = AsyncMock()
+    fake_message = FakeMessage({"foo": "bar"})
+    fake_queue.iterator = lambda: FakeAsyncIterator([fake_message])  # <-- ici
 
-    # 👉 injecte fake iterator avec 1 message
-    fake_queue.iterator.return_value = FakeAsyncIterator([fake_message])
+    called = {}
+    done = asyncio.Event()
 
     async def handler(payload, rk):
-        assert payload["foo"] == "bar"
-        assert rk == "rk"
+        called["payload"] = payload
+        called["rk"] = rk
+        done.set()
 
     task = asyncio.create_task(
         start_consumer(fake_connection, fake_exchange, aio_pika.ExchangeType.TOPIC,
                        queue_name="q", patterns=["rk"], handler=handler)
     )
-    await asyncio.sleep(0.05)
+
+    await asyncio.wait_for(done.wait(), timeout=1)
     task.cancel()
 
     fake_queue.bind.assert_awaited_with(fake_exchange, routing_key="rk")
+    assert called["payload"] == {"foo": "bar"}
+    assert called["rk"] == "rk"
 
 
 @pytest.mark.asyncio
@@ -183,8 +193,7 @@ async def test_start_consumer_fanout():
 
     async def handler(payload, rk): ...
 
-    # 👉 pas de messages
-    fake_queue.iterator.return_value = FakeAsyncIterator([])
+    fake_queue.iterator = lambda: FakeAsyncIterator([])
 
     task = asyncio.create_task(
         start_consumer(fake_connection, fake_exchange, aio_pika.ExchangeType.FANOUT,

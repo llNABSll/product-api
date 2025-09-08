@@ -13,6 +13,8 @@ from typing import Any, Dict
 from fastapi import Request, Response
 from app.core.config import settings
 
+ACCESS_LOGGER_NAME = "app.access"
+
 # === Context ===
 _request_id_ctx: ContextVar[str | None] = ContextVar("request_id", default=None)
 
@@ -43,7 +45,7 @@ class SecretsFilter(logging.Filter):
     IMPORTANT: on vide record.args si on modifie record.msg,
     sinon logging tentera de faire msg % args -> TypeError.
     """
-    TOKEN_RE = re.compile(r"(Bearer\s+)[A-Za-z0-9\-\._]+", re.IGNORECASE)
+    TOKEN_RE = re.compile(r"(Bearer\s+)[A-Za-z0-9._-]+")
     PWD_RE = re.compile(r'("password"\s*:\s*)"(.*?)"', re.IGNORECASE)
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -138,7 +140,7 @@ def setup_logging() -> None:
         logger.addHandler(console)
 
     # Access logger dédié
-    access_logger = logging.getLogger("app.access")
+    access_logger = logging.getLogger(ACCESS_LOGGER_NAME)
     access_logger.setLevel(level)
     access_logger.handlers.clear()
     access_logger.addHandler(access_file)
@@ -178,7 +180,7 @@ async def access_log_middleware(request: Request, call_next):
     except Exception:
         # On log l'exception côté access avec les métadonnées...
         duration_ms = round((time.perf_counter() - start) * 1000, 2)
-        logging.getLogger("app.access").exception(
+        logging.getLogger(ACCESS_LOGGER_NAME).exception(
             "unhandled exception",
             extra={
                 "method": request.method,
@@ -195,7 +197,7 @@ async def access_log_middleware(request: Request, call_next):
     else:
         # Succès: on log l'accès et on renvoie le header
         duration_ms = round((time.perf_counter() - start) * 1000, 2)
-        logging.getLogger("app.access").info(
+        logging.getLogger(ACCESS_LOGGER_NAME).info(
             "request",
             extra={
                 "method": request.method,
