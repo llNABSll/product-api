@@ -1,16 +1,14 @@
+# app/api/routes/product.py
 from __future__ import annotations
 
 import logging
-from typing import Literal, Optional
+from typing import List, Optional, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status, Header
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.schemas.product_schema import ProductCreate, ProductUpdate, ProductResponse
-from app.security.security import require_read, require_write
-
-# ⚠️ Import du service + exceptions métier
 from app.services.product_service import (
     ProductService,
     NotFoundError,
@@ -18,29 +16,21 @@ from app.services.product_service import (
     ConcurrencyConflictError,
     InsufficientStockError,
 )
+from app.infra.events.rabbitmq import rabbitmq
+from app.security.security import require_read, require_write
 
-# ⚠️ Import de l’instance RabbitMQ créée dans main.py
-from app.main import rabbitmq
-
-router = APIRouter(prefix="/products", tags=["produits"])
+router = APIRouter(prefix="/products", tags=["Products"])
 logger = logging.getLogger(__name__)
 
 # ---------- Messages ----------
-PRODUCT_NOT_FOUND_MSG = "Produit non trouvé"
-SKU_ALREADY_EXISTS_MSG = "SKU déjà utilisé"
-INSUFFICIENT_STOCK_MSG = "Stock insuffisant"
-VERSION_CONFLICT_MSG = "Conflit de version : rechargez puis réessayez"
-
+PRODUCT_NOT_FOUND_MSG = "Product not found"
+SKU_ALREADY_EXISTS_MSG = "SKU already exists"
+VERSION_CONFLICT_MSG = "Product has been modified elsewhere"
+INSUFFICIENT_STOCK_MSG = "Insufficient stock"
 
 # ---------- Dépendance ProductService ----------
 def get_product_service(db: Session = Depends(get_db)) -> ProductService:
-    """
-    Fournit un ProductService par requête avec :
-      - une session DB scopée à la requête,
-      - l’instance RabbitMQ globale fournie par main.py.
-    """
     return ProductService(db, rabbitmq)
-
 
 # ===================== CRUD =====================
 
@@ -50,7 +40,7 @@ def get_product_service(db: Session = Depends(get_db)) -> ProductService:
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(require_write)],
 )
-async def create(
+async def create_product(
     product: ProductCreate,
     svc: ProductService = Depends(get_product_service),
 ):
@@ -60,26 +50,25 @@ async def create(
         logger.info("product created", extra={"id": created.id, "sku": created.sku})
         return created
     except SKUAlreadyExistsError:
-        logger.debug("create conflict: sku already exists", extra={"sku": product.sku})
         raise HTTPException(status_code=409, detail=SKU_ALREADY_EXISTS_MSG)
 
 
 @router.get(
     "/",
-    response_model=list[ProductResponse],
+    response_model=List[ProductResponse],
     dependencies=[Depends(require_read)],
 )
 def list_products(
-    q: Optional[str] = Query(None, description="Recherche partielle sur le nom"),
+    q: Optional[str] = Query(None, description="Recherche partielle sur nom/sku"),
     category: Optional[str] = Query(None),
     brand: Optional[str] = Query(None),
     min_price: Optional[float] = Query(None, ge=0),
     max_price: Optional[float] = Query(None, ge=0),
     only_active: bool = Query(True),
-    sort_by: Literal["id", "sku", "name", "price", "quantity", "created_at", "updated_at"] = Query("id"),
-    sort_dir: Literal["asc", "desc"] = Query("asc"),
     skip: int = Query(0, ge=0),
     limit: int = Query(10, ge=1, le=100),
+    sort_by: Literal["id", "name", "sku", "price", "created_at", "updated_at"] = Query("id"),
+    sort_dir: Literal["asc", "desc"] = Query("asc"),
     svc: ProductService = Depends(get_product_service),
 ):
     """Liste paginée avec filtres/tri (sécurité : rôle lecture requis)."""
@@ -90,10 +79,10 @@ def list_products(
         min_price=min_price,
         max_price=max_price,
         only_active=only_active,
-        sort_by=sort_by,
-        sort_dir=sort_dir,
         skip=skip,
         limit=limit,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
     )
     logger.debug("products listed", extra={"count": len(rows)})
     return rows
@@ -104,12 +93,11 @@ def list_products(
     response_model=ProductResponse,
     dependencies=[Depends(require_read)],
 )
-def read(product_id: int, svc: ProductService = Depends(get_product_service)):
+def read_product(product_id: int, svc: ProductService = Depends(get_product_service)):
     """Détail d’un produit par ID (sécurité : rôle lecture requis)."""
     try:
         return svc.get(product_id)
     except NotFoundError:
-        logger.debug("product not found", extra={"id": product_id})
         raise HTTPException(status_code=404, detail=PRODUCT_NOT_FOUND_MSG)
 
 
@@ -118,7 +106,7 @@ def read(product_id: int, svc: ProductService = Depends(get_product_service)):
     response_model=ProductResponse,
     dependencies=[Depends(require_write)],
 )
-async def update(
+async def update_product(
     product_id: int,
     product: ProductUpdate,
     if_match: Optional[str] = Header(None, alias="If-Match"),
@@ -141,34 +129,21 @@ async def update(
     except ConcurrencyConflictError:
         raise HTTPException(status_code=409, detail=VERSION_CONFLICT_MSG)
 
-
 @router.delete(
     "/{product_id}",
     response_model=ProductResponse,
     dependencies=[Depends(require_write)],
 )
-async def delete(product_id: int, svc: ProductService = Depends(get_product_service)):
+async def delete_product(product_id: int, svc: ProductService = Depends(get_product_service)):
     """Supprime un produit (sécurité : rôle écriture requis)."""
     try:
-        return await svc.delete(product_id)
+        deleted = await svc.delete(product_id)
+        logger.info("product deleted", extra={"id": product_id})
+        return deleted
     except NotFoundError:
         raise HTTPException(status_code=404, detail=PRODUCT_NOT_FOUND_MSG)
 
-
 # ===================== Extras =====================
-
-@router.get(
-    "/sku/{sku}",
-    response_model=ProductResponse,
-    dependencies=[Depends(require_read)],
-)
-def read_by_sku(sku: str, svc: ProductService = Depends(get_product_service)):
-    """Récupère un produit par SKU exact (sécurité : rôle lecture requis)."""
-    product = svc.get_by_sku(sku)
-    if not product:
-        raise HTTPException(status_code=404, detail=PRODUCT_NOT_FOUND_MSG)
-    return product
-
 
 @router.patch(
     "/{product_id}/stock",
@@ -177,10 +152,10 @@ def read_by_sku(sku: str, svc: ProductService = Depends(get_product_service)):
 )
 async def adjust_stock(
     product_id: int,
-    delta: int = Query(..., description="Ex: +5 ou -3"),
+    delta: int,
     svc: ProductService = Depends(get_product_service),
 ):
-    """Ajuste le stock (sécurité : rôle écriture requis)."""
+    """Ajuste le stock d’un produit (peut lever une erreur si stock insuffisant)."""
     try:
         return await svc.adjust_stock(product_id, delta)
     except NotFoundError:
@@ -196,11 +171,27 @@ async def adjust_stock(
 )
 async def set_active(
     product_id: int,
-    is_active: bool = Query(...),
+    is_active: bool,
     svc: ProductService = Depends(get_product_service),
 ):
-    """Active ou désactive le produit (sécurité : rôle écriture requis)."""
+    """Active/désactive un produit."""
     try:
         return await svc.set_active(product_id, is_active)
     except NotFoundError:
         raise HTTPException(status_code=404, detail=PRODUCT_NOT_FOUND_MSG)
+
+
+@router.get(
+    "/sku/{sku}",
+    response_model=ProductResponse,
+    dependencies=[Depends(require_read)],
+)
+async def get_by_sku(
+    sku: str,
+    svc: ProductService = Depends(get_product_service),
+):
+    """Cherche un produit par SKU."""
+    prod = svc.get_by_sku(sku)
+    if not prod:
+        raise HTTPException(status_code=404, detail=PRODUCT_NOT_FOUND_MSG)
+    return prod

@@ -15,7 +15,7 @@ class MessagePublisher(Protocol):
 class MessageConsumer(Protocol):
     async def start_consumer(
         self,
-        connection,   # laissé générique, peut être un objet RabbitMQ ou autre
+        connection, 
         exchange,
         exchange_type,
         *,

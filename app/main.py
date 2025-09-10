@@ -15,7 +15,9 @@ from app.core.config import settings
 from app.core.database import Base, engine
 from app.core.logging import setup_logging, access_log_middleware
 from app.infra.events.rabbitmq import rabbitmq, start_consumer
+from app.infra.events.handlers import handle_order_created, handle_order_deleted, handle_order_updated
 from app.api.routes import product
+from app.core.database import SessionLocal
 
 # --- Logging ---
 setup_logging()
@@ -49,24 +51,38 @@ async def lifespan(app: FastAPI):
     try:
         await rabbitmq.connect()
 
-        async def on_event(payload: dict, rk: str):
+        async def consumer_handler(payload: dict, rk: str):
             logger.info("[product-api] received %s: %s", rk, payload)
+            db = SessionLocal()
+            try:
+                if rk == "order.created":
+                    await handle_order_created(payload, db)
+                elif rk == "order.deleted":
+                    await handle_order_deleted(payload, db)
+                elif rk == "order.updated":
+                    await handle_order_updated(payload, db)
+                else:
+                    logger.warning(f"[product-api] event ignoré: {rk}")
+            finally:
+                db.close()
 
+        # ✅ lancement en tâche de fond (et non pas await)
         asyncio.create_task(
             start_consumer(
                 rabbitmq.connection,
                 rabbitmq.exchange,
                 rabbitmq.exchange_type,
-                queue_name="q-product",
+                queue_name="product-events",
                 patterns=["order.#", "customer.#"],
-                handler=on_event,
+                handler=consumer_handler,
             )
         )
+
         logger.info("RabbitMQ consumer started")
     except Exception:
         logger.exception("RabbitMQ startup failed")
 
-    yield  # 👉 Application runs here
+    yield  
 
     # --- Shutdown ---
     try:

@@ -79,7 +79,7 @@ class RabbitMQ:
                 ),
                 routing_key=rk,
             )
-            logger.info("Published rk='%s' payload=%s", routing_key, message)
+            logger.info("Published rk=%s, payload=%s", routing_key, message)
         except Exception:
             logger.exception("Failed to publish rk=%s", routing_key)
 

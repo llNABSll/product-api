@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 
-from app.models.product import Product
+from app.models.product_models import Product
 from app.schemas.product_schema import ProductCreate, ProductUpdate
 from app.repositories import product_repository as repo
 from app.infra.events.contracts import MessagePublisher 

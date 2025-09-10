@@ -11,7 +11,7 @@ from app.services.product_service import (
     ConcurrencyConflictError,
     InsufficientStockError,
 )
-from app.models.product import Product
+from app.models.product_models import Product
 from app.schemas.product_schema import ProductCreate, ProductUpdate
 
 
