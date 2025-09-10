@@ -59,6 +59,7 @@ class SecretsFilter(logging.Filter):
         if msg != original_msg:
             record.msg = msg
             record.args = ()
+            return True
             
         return True
 
