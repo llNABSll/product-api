@@ -34,7 +34,8 @@ class _Verifier:
             key,
             algorithms=["RS256"],
             issuer=self._iss,
-            options={"verify_aud": False},
+            audience="product-api",
+            options={"verify_aud": True},
             leeway=10,
         )
 

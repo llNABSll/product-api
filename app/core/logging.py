@@ -49,13 +49,17 @@ class SecretsFilter(logging.Filter):
     PWD_RE = re.compile(r'("password"\s*:\s*)"(.*?)"', re.IGNORECASE)
 
     def filter(self, record: logging.LogRecord) -> bool:
-        # getMessage() fait déjà msg % args -> on travaille sur msg brut
-        msg = str(record.msg)
-        msg = self.TOKEN_RE.sub(r"\1[REDACTED]", msg)
+        if not isinstance(record.msg, str):
+            return True
+        
+        original_msg = record.msg
+        msg = self.TOKEN_RE.sub(r"\1[REDACTED]", original_msg)
         msg = self.PWD_RE.sub(r'\1"[REDACTED]"', msg)
-        record.msg = msg
-        # >>> FIX clé: vider les args pour éviter le formatage
-        record.args = ()
+        
+        if msg != original_msg:
+            record.msg = msg
+            record.args = ()
+            
         return True
 
 # === Formatters ===
