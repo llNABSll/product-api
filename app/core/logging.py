@@ -50,7 +50,7 @@ class SecretsFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         if not isinstance(record.msg, str):
-            return True
+            return False
         
         original_msg = record.msg
         msg = self.TOKEN_RE.sub(r"\1[REDACTED]", original_msg)
@@ -59,6 +59,7 @@ class SecretsFilter(logging.Filter):
         if msg != original_msg:
             record.msg = msg
             record.args = ()
+            return True
             
         return True
 
