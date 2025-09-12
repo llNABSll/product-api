@@ -61,12 +61,13 @@ async def lifespan(app: FastAPI):
                     await handle_order_deleted(payload, db)
                 elif rk == "order.updated":
                     await handle_order_updated(payload, db)
+                elif rk == "order.rejected":
+                    await handle_order_deleted(payload, db) 
                 else:
                     logger.warning(f"[product-api] event ignoré: {rk}")
             finally:
                 db.close()
 
-        # ✅ lancement en tâche de fond (et non pas await)
         asyncio.create_task(
             start_consumer(
                 rabbitmq.connection,

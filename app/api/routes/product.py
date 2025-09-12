@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status, Header
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.schemas.product_schema import ProductCreate, ProductUpdate, ProductResponse
+from app.schemas.product_schema import ProductCreate, ProductUpdate, ProductResponse, StockAdjust, ActiveToggle
 from app.services.product_service import (
     ProductService,
     NotFoundError,
@@ -152,12 +152,12 @@ async def delete_product(product_id: int, svc: ProductService = Depends(get_prod
 )
 async def adjust_stock(
     product_id: int,
-    delta: int,
+    body: StockAdjust,
     svc: ProductService = Depends(get_product_service),
 ):
     """Ajuste le stock d’un produit (peut lever une erreur si stock insuffisant)."""
     try:
-        return await svc.adjust_stock(product_id, delta)
+        return await svc.adjust_stock(product_id, body.delta)
     except NotFoundError:
         raise HTTPException(status_code=404, detail=PRODUCT_NOT_FOUND_MSG)
     except InsufficientStockError:
@@ -171,16 +171,14 @@ async def adjust_stock(
 )
 async def set_active(
     product_id: int,
-    is_active: bool,
+    body: ActiveToggle, 
     svc: ProductService = Depends(get_product_service),
 ):
     """Active/désactive un produit."""
     try:
-        return await svc.set_active(product_id, is_active)
+        return await svc.set_active(product_id, body.is_active)
     except NotFoundError:
         raise HTTPException(status_code=404, detail=PRODUCT_NOT_FOUND_MSG)
-
-
 @router.get(
     "/sku/{sku}",
     response_model=ProductResponse,

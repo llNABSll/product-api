@@ -12,6 +12,7 @@ from app.services import product_service
 @pytest.mark.asyncio
 async def test_handle_order_created_success(monkeypatch):
     fake_svc = AsyncMock()
+    fake_svc.get = MagicMock(return_value=MagicMock(quantity=10))
     monkeypatch.setattr(handlers, "_get_service", lambda db: fake_svc)
 
     payload = {
@@ -28,15 +29,16 @@ async def test_handle_order_created_success(monkeypatch):
 @pytest.mark.asyncio
 async def test_handle_order_created_insufficient_stock(monkeypatch, caplog):
     fake_svc = AsyncMock()
-    fake_svc.adjust_stock.side_effect = product_service.InsufficientStockError()
+    fake_svc.get = MagicMock(return_value=MagicMock(quantity=3))  # dispo insuffisante
     monkeypatch.setattr(handlers, "_get_service", lambda db: fake_svc)
 
     payload = {"id": 1, "items": [{"product_id": 101, "quantity": 5}]}
 
     await handlers.handle_order_created(payload, db=MagicMock())
 
-    fake_svc.adjust_stock.assert_awaited()
-    assert "Stock insuffisant produit 101" in caplog.text
+    fake_svc.adjust_stock.assert_not_called()
+    assert "rollback commande 1" in caplog.text
+
 
 
 @pytest.mark.asyncio
@@ -44,7 +46,7 @@ async def test_handle_order_created_empty_payload(monkeypatch):
     fake_svc = AsyncMock()
     monkeypatch.setattr(handlers, "_get_service", lambda db: fake_svc)
 
-    payload = {}  # pas d'items
+    payload = {"id": 99, "items": []} 
     await handlers.handle_order_created(payload, db=MagicMock())
 
     fake_svc.adjust_stock.assert_not_called()
