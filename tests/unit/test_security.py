@@ -162,3 +162,35 @@ def test_require_write_forbidden():
         security.require_write(ctx)
     assert e.value.status_code == 403
     assert security._ROLE_WRITE in e.value.detail
+
+def test_get_verifier_creates_and_reuses(monkeypatch):
+    # Patch settings pour éviter RuntimeError
+    monkeypatch.setattr(security.settings, "KEYCLOAK_JWKS_URL", "http://fake/jwks")
+    monkeypatch.setattr(security.settings, "KEYCLOAK_ISSUER", "http://issuer")
+
+    # Patch PyJWKClient pour éviter un vrai appel réseau
+    class DummyJWK:
+        def get_signing_key_from_jwt(self, token):
+            return type("K", (), {"key": "dummy"})()
+    monkeypatch.setattr(security, "PyJWKClient", lambda url: DummyJWK())
+
+    # Reset global
+    security._verifier = None
+    v1 = security._get_verifier()
+    v2 = security._get_verifier()
+    assert v1 is v2 
+
+
+
+def test_verifier_decode(monkeypatch):
+    # Patch PyJWKClient pour renvoyer une clé bidon
+    class DummyJWK:
+        def get_signing_key_from_jwt(self, token): return type("K", (), {"key": "dummy"})()
+
+    monkeypatch.setattr(security, "PyJWKClient", lambda url: DummyJWK())
+    monkeypatch.setattr(security.jwt, "decode", lambda token, key, **kw: {"sub": "u1", "roles": ["product:read"]})
+
+    v = security._Verifier("http://jwks", "issuer")
+    payload = v.decode("tok")
+    assert payload["sub"] == "u1"
+    assert "product:read" in payload["roles"]

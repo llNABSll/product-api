@@ -83,3 +83,10 @@ class ProductResponse(ProductBase):
 
     # Pydantic v2: permet la construction depuis des objets ORM (SQLAlchemy)
     model_config = ConfigDict(from_attributes=True)
+
+class StockAdjust(BaseModel):
+    delta: int = Field(..., description="Variation à appliquer au stock (positive ou négative)")
+
+class ActiveToggle(BaseModel):
+    is_active: bool = Field(..., description="Active ou désactive le produit")
+

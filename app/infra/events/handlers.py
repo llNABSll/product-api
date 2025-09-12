@@ -18,25 +18,42 @@ def _get_service(db: Session) -> ProductService:
 async def handle_order_created(payload: dict, db: Session):
     """
     Décrémente le stock pour chaque produit de la commande.
-    payload attendu :
-    {
-        "id": 123,
-        "customer_id": 1,
-        "items": [{"product_id": 3, "quantity": 2}, ...]
-    }
+    Transaction atomique : si un produit est insuffisant -> rollback complet.
     """
     svc = _get_service(db)
+    items = payload.get("items", [])
 
-    for item in payload.get("items", []):
-        pid = item["product_id"]
-        qty = item["quantity"]
-        try:
-            await svc.adjust_stock(pid, -qty)
-            logger.info(f"[order.created] Stock décrémenté produit {pid} (-{qty})")
-        except InsufficientStockError:
-            logger.warning(
-                f"[order.created] Stock insuffisant produit {pid} (commande {payload['id']})"
-            )
+    try:
+        # 1. Vérification globale
+        for item in items:
+            pid, qty = item["product_id"], item["quantity"]
+            product = svc.get(pid)
+            if (product.quantity or 0) < qty:
+                raise InsufficientStockError(
+                    f"Produit {pid} insuffisant (demande {qty}, dispo {product.quantity})"
+                )
+
+        # 2. Décrément atomique
+        for item in items:
+            await svc.adjust_stock(item["product_id"], -item["quantity"])
+
+        db.commit()
+        logger.info(f"[order.created] Commande {payload['id']} stock décrémenté")
+
+    except InsufficientStockError as e:
+        db.rollback()
+        logger.warning(f"[order.created] rollback commande {payload['id']} -> {e}")
+
+        # 👉 Publier un event "order.rejected" vers RabbitMQ
+        await svc.mq.publish_message(
+            "order.rejected",
+            {
+                "id": payload["id"],
+                "reason": str(e),
+                "items": items,
+            },
+        )
+        return
 
 
 # ----- ORDER DELETED -----

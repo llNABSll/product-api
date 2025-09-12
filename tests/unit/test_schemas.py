@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 from pydantic import ValidationError
 
 from app.schemas.product_schema import (
-    ProductBase, ProductCreate, ProductUpdate, ProductResponse
+    ProductBase, ProductCreate, ProductUpdate, ProductResponse, StockAdjust, ActiveToggle
 )
 
 
@@ -123,3 +123,107 @@ def test_product_response_from_orm():
     assert resp.version == 2
     assert resp.sku == "SKU"
     assert resp.is_active is True
+
+# ----- ProductBase ----- 
+def test_product_base_defaults():
+    p = ProductBase(
+        sku="SKU123",
+        name="Produit",
+        price=0.0,
+        quantity=0,
+    )
+    # champs optionnels doivent être None par défaut
+    assert p.description is None
+    assert p.unit is None
+    assert p.brand is None
+    assert p.category is None
+    # is_active par défaut = True
+    assert p.is_active is True
+
+
+def test_product_base_vat_default_zero():
+    p = ProductBase(
+        sku="SKU123",
+        name="Produit",
+        price=1.0,
+        quantity=1,
+    )
+    assert p.vat_rate == 0
+
+@pytest.mark.parametrize("field,value", [
+    ("price", math.nan),
+    ("price", math.inf),
+    ("price", -math.inf),
+    ("vat_rate", math.nan),
+    ("vat_rate", math.inf),
+    ("vat_rate", -math.inf),
+])
+def test_product_update_non_finite_values(field, value):
+    with pytest.raises(ValidationError) as e:
+        ProductUpdate(**{field: value})
+    # On s’assure simplement qu’une ValidationError est levée
+    assert "validation error" in str(e.value)
+
+# ----- ProductUpdate ----- 
+def test_product_update_exclude_none_and_unset():
+    u = ProductUpdate(name=None, price=5.0)
+    dumped = u.model_dump(exclude_none=True, exclude_unset=True)
+    assert "price" in dumped
+    assert "name" not in dumped  # None doit disparaître
+
+
+# ----- ProductResponse ----- 
+def test_product_response_full_fields():
+    dt = datetime.now(timezone.utc)
+    resp = ProductResponse(
+        id=10,
+        version=3,
+        created_at=dt,
+        updated_at=dt,
+        sku="SKU-X",
+        name="Produit X",
+        description="desc",
+        price=99.9,
+        quantity=42,
+        vat_rate=0.2,
+        unit="pcs",
+        brand="BrandX",
+        category="CatX",
+        is_active=False,
+    )
+    assert resp.id == 10
+    assert resp.version == 3
+    assert resp.is_active is False
+    assert resp.name == "Produit X"
+
+# ----- StockAdjust -----
+def test_stock_adjust_valid():
+    s = StockAdjust(delta=5)
+    assert s.delta == 5
+
+def test_stock_adjust_invalid_type():
+    with pytest.raises(ValidationError):
+        StockAdjust(delta="abc")  # doit être un int
+
+# ----- ActiveToggle -----
+def test_active_toggle_true():
+    a = ActiveToggle(is_active=True)
+    assert a.is_active is True
+
+def test_active_toggle_false():
+    a = ActiveToggle(is_active=False)
+    assert a.is_active is False
+
+def test_active_toggle_missing_field():
+    with pytest.raises(ValidationError):
+        ActiveToggle()  # is_active obligatoire
+
+# ----- ProductUpdate: validator must_be_finite -----
+@pytest.mark.parametrize("field,value", [
+    ("vat_rate", math.nan),
+    ("vat_rate", math.inf),
+    ("vat_rate", -math.inf),
+])
+def test_product_update_vat_rate_non_finite(field, value):
+    with pytest.raises(ValidationError):
+        ProductUpdate(**{field: value})

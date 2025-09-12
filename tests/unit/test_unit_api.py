@@ -135,17 +135,18 @@ def test_read_by_sku(client):
 
 
 def test_adjust_stock(client):
-    r = client.patch("/products/1/stock?delta=5")
+    r = client.patch("/products/1/stock", json={"delta": 5})
     assert r.status_code == 200
     mock_service = app.dependency_overrides[product_routes.get_product_service]()
-    mock_service.adjust_stock.assert_awaited()
+    mock_service.adjust_stock.assert_awaited_with(1, 5)
 
 
 def test_set_active(client):
-    r = client.patch("/products/1/active?is_active=false")
+    r = client.patch("/products/1/active", json={"is_active": False})
     assert r.status_code == 200
     mock_service = app.dependency_overrides[product_routes.get_product_service]()
-    mock_service.set_active.assert_awaited()
+    mock_service.set_active.assert_awaited_with(1, False)
+
 
 @pytest.mark.asyncio
 async def test_create_conflict(client):
@@ -183,19 +184,21 @@ def test_read_by_sku_not_found(client):
 async def test_adjust_stock_not_found(client):
     mock_service = app.dependency_overrides[product_routes.get_product_service]()
     mock_service.adjust_stock.side_effect = product_service.NotFoundError()
-    r = client.patch("/products/1/stock?delta=5")
+    r = client.patch("/products/1/stock", json={"delta": 5})
     assert r.status_code == 404
+
 
 @pytest.mark.asyncio
 async def test_adjust_stock_conflict(client):
     mock_service = app.dependency_overrides[product_routes.get_product_service]()
     mock_service.adjust_stock.side_effect = product_service.InsufficientStockError()
-    r = client.patch("/products/1/stock?delta=-10")
+    r = client.patch("/products/1/stock", json={"delta": -10})
     assert r.status_code == 409
+
 
 @pytest.mark.asyncio
 async def test_set_active_not_found(client):
     mock_service = app.dependency_overrides[product_routes.get_product_service]()
     mock_service.set_active.side_effect = product_service.NotFoundError()
-    r = client.patch("/products/1/active?is_active=true")
+    r = client.patch("/products/1/active", json={"is_active": True})
     assert r.status_code == 404

@@ -1,4 +1,3 @@
-# tests/integration/test_full_flow.py
 import pytest
 from fastapi.testclient import TestClient
 
@@ -26,7 +25,6 @@ def client(patch_rabbitmq):
     app.dependency_overrides[require_read] = lambda: fake_ctx
     app.dependency_overrides[require_write] = lambda: fake_ctx
 
-    # Yield the client
     yield TestClient(app)
 
     # Clean up
@@ -46,13 +44,13 @@ def test_full_product_lifecycle(client):
     assert res2.status_code == 200
     assert res2.json()["name"] == "Lifecycle Updated"
 
-    # 3. Ajustement de stock
-    res3 = client.patch(f"/products/{pid}/stock?delta=-2")
+    # 3. Ajustement de stock (delta dans le body)
+    res3 = client.patch(f"/products/{pid}/stock", json={"delta": -2})
     assert res3.status_code == 200
     assert res3.json()["quantity"] == 8
 
-    # 4. Désactivation
-    res4 = client.patch(f"/products/{pid}/active?is_active=false")
+    # 4. Désactivation (is_active dans le body)
+    res4 = client.patch(f"/products/{pid}/active", json={"is_active": False})
     assert res4.status_code == 200
     assert res4.json()["is_active"] is False
 
