@@ -155,13 +155,13 @@ def setup_logging() -> None:
 
     # Harmoniser uvicorn
     for name in ("uvicorn", "uvicorn.error"):
-        l = logging.getLogger(name)
-        l.setLevel(level)
-        l.handlers.clear()
-        l.addHandler(app_file)
+        uv_logger = logging.getLogger(name)
+        uv_logger.setLevel(level)
+        uv_logger.handlers.clear()
+        uv_logger.addHandler(app_file)
         if settings.LOG_ENABLE_CONSOLE:
-            l.addHandler(console)
-        l.propagate = False
+            uv_logger.addHandler(console)
+        uv_logger.propagate = False
 
     # Garder l’access d’Uvicorn silencieux (on loggue nous-mêmes)
     logging.getLogger("uvicorn.access").handlers.clear()

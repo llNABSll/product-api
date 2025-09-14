@@ -7,7 +7,7 @@ import pytest
 import aio_pika
 
 from app.infra.events import contracts
-from app.infra.events.rabbitmq import RabbitMQ, start_consumer, _EXCHANGE_TYPE_MAP
+from app.infra.events.rabbitmq import RabbitMQ, start_consumer
 
 
 # ------------------------------
