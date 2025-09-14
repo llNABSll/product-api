@@ -1,11 +1,8 @@
 # tests/test_core.py
-import os
-import tempfile
 import logging
 import pytest
-from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock
 
 import sqlalchemy
 

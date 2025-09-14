@@ -35,7 +35,6 @@ def init_db() -> None:
     avant d'appeler Base.metadata.create_all().
     """
     # Importe les modèles (via le package aggregator)
-    from app import models
     Base.metadata.create_all(bind=engine)
     logger.info("DB init: tables ensured")
 

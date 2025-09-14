@@ -7,17 +7,27 @@ L’application est développée en **Python (FastAPI)**, conteneurisée avec **
 
 Ce microservice gère les opérations CRUD sur les produits du catalogue et s’inscrit dans une architecture microservices avec communication via message broker (RabbitMQ).
 
+API REST **Produits** (microservice) pour PayeTonKawa.  
+Stack : **FastAPI**, **SQLAlchemy**, **PostgreSQL**, **RabbitMQ**, **Prometheus metrics**, **Traefik** (ForwardAuth JWT).
+
 ---
 
 ## Fonctionnalités principales
 
-- Création, lecture, mise à jour et suppression de produits (CRUD)
-- Exposition d’une API REST documentée automatiquement (Swagger UI)
-- Gestion de la base de données PostgreSQL indépendante
-- Prise en charge de la configuration via variables d’environnement (`.env`)
-- Prêt à l’intégration dans un cluster Docker Compose multi-services
+- CRUD produits (`/api/products`)
+- Validation entrée/sortie (Pydantic schemas)
+- Sécurité par **JWT** (rôles `product:read`, `product:write`)
+- **Événements** via RabbitMQ (ex. `product.created`, `product.updated`, `product.deleted`)
+- **Metrics** Prometheus (`/metrics`) + **Health** (`/health`)
+- Logs structurés (request id, latence)
 
 ---
+
+## Architecture (vue rapide)
+```
+[Client] -> [Traefik] --(ForwardAuth jwt-auth)--> [Product API] --> [PostgreSQL]
+                                            \--> [RabbitMQ] (publish/consume)
+```
 
 ## Structure du projet
 app/  
@@ -35,20 +45,57 @@ app/
 
 ---
 
-## Lancement rapide
+---
 
-1. **Configurer le fichier `.env` à la racine** (voir exemple fourni)
-2. **Lancer l’application avec Docker Compose :**
+## Sécurité
+- Auth via JWT validé en edge (Traefik → `jwt-auth`) + recheck des **scopes** côté API.
+- Bonnes pratiques OWASP : validation stricte des payloads, messages d’erreur neutres, secrets via env.
+
+---
+
+## Lancer avec Docker (recommandé)
 ```bash
-# Initialiser le fichier `.env` à partir du modèle fourni :
-cp env.example .env # Pensez à mettre les valeurs à jour
-
-# Lancer l'application docker
-docker-compose up --build
-
-# Accéder à la documentation interactive de l’API :
-http://localhost:8000/docs
+docker compose up -d product-db rabbitmq
+docker compose up -d product-api
 ```
+
+## Lancer en dev (hors Docker)
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+copy env.example .env #remplir les informations nécessaires
+uvicorn app.main:app --reload --port 8000
+```
+
+---
+
+## Tests & couverture
+```bash
+pytest #test terminal de commande
+pytest --cov=app --cov-branch --cov-report=xml:coverage.xml #test covergae généré
+```
+> Objectif : **≥ 95 %** de couverture.
+
+---
+
+## Observabilité
+- `/metrics` (Prometheus) : requêtes, codes HTTP, histogrammes de latence par route
+- `/health` : ready/liveness
+
+---
+
+## Événements (RabbitMQ)
+- **Publie** : `product.created`, `product.updated`, `product.deleted`
+- **Consomme** : selon besoins (ex. invalidation cache)
+
+---
+
+## CI/CD (GitHub Actions)
+- Lint, tests + coverage → `coverage.xml`
+- Build image Docker, scan, push registry
+- Artefacts/Images récupérables pour déploiement manuel (exigence MSPR)
+
+---
 
 ## Notes
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from typing import Iterable, Awaitable, Callable
 
 import aio_pika
