@@ -156,3 +156,26 @@ async def test_access_log_middleware_exception():
 
     with pytest.raises(RuntimeError):
         await core_logging.access_log_middleware(DummyRequest(), call_next)
+
+
+def test_get_db_rollback_and_close_fail(monkeypatch, caplog):
+    db = MagicMock()
+
+    # rollback lève une exception
+    def bad_rollback():
+        raise RuntimeError("rollback failed")
+    db.rollback = bad_rollback
+    # close lève une exception
+    def bad_close():
+        raise RuntimeError("close failed")
+    db.close = bad_close
+    monkeypatch.setattr(database, "SessionLocal", lambda: db)
+    gen = database.get_db()
+    next(gen)  # ouvre la session
+    # forcer une exception dans le generator -> rollback appelé mais échoue
+    with pytest.raises(ValueError):
+        gen.throw(ValueError("boom"))
+    # on doit voir les logs d’échec rollback
+    assert "rollback failed" in caplog.text or "db rollback failed" in caplog.text
+    # fermer la session -> close appelé mais échoue
+    assert "close failed" in caplog.text or "db session close failed" in caplog.text
