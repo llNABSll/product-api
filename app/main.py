@@ -15,7 +15,15 @@ from app.core.config import settings
 from app.core.database import Base, engine
 from app.core.logging import setup_logging, access_log_middleware
 from app.infra.events.rabbitmq import rabbitmq, start_consumer
-from app.infra.events.handlers import handle_order_created, handle_order_deleted, handle_order_updated
+from app.infra.events.handlers import (
+    handle_order_created,
+    handle_order_deleted,
+    handle_order_updated,
+    handle_order_items_delta,
+    handle_order_cancelled,
+    handle_order_rejected,
+)
+
 from app.api.routes import product
 from app.core.database import SessionLocal
 
@@ -57,40 +65,44 @@ async def lifespan(app: FastAPI):
             try:
                 if rk == "order.created":
                     await handle_order_created(payload, db)
+                elif rk == "order.items_delta":
+                    await handle_order_items_delta(payload, db)
+                elif rk == "order.cancelled":
+                    await handle_order_cancelled(payload, db)
+                elif rk == "order.rejected":
+                    await handle_order_rejected(payload, db)
                 elif rk == "order.deleted":
                     await handle_order_deleted(payload, db)
                 elif rk == "order.updated":
                     await handle_order_updated(payload, db)
-                elif rk == "order.rejected":
-                    await handle_order_deleted(payload, db) 
                 else:
-                    logger.warning(f"[product-api] event ignoré: {rk}")
+                    logger.warning("[product-api] event ignoré: rk=%s payload_keys=%s", rk, list(payload.keys()))
             finally:
                 db.close()
 
         asyncio.create_task(
             start_consumer(
                 rabbitmq.connection,
-                rabbitmq.exchange,
+                rabbitmq.exchange_name,
                 rabbitmq.exchange_type,
                 queue_name="product-events",
                 patterns=["order.#", "customer.#"],
                 handler=consumer_handler,
             )
         )
+        logger.info("consumer task démarré")
 
-        logger.info("RabbitMQ consumer started")
     except Exception:
-        logger.exception("RabbitMQ startup failed")
+        logger.exception("RabbitMQ connect/consumer startup failed")
 
-    yield  
+    yield
 
     # --- Shutdown ---
     try:
         await rabbitmq.disconnect()
-        logger.info("RabbitMQ disconnected")
+        logger.info("RabbitMQ déconnecté proprement")
     except Exception:
-        pass
+        logger.exception("RabbitMQ disconnect failed")
 
 
 app = FastAPI(
