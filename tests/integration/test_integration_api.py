@@ -6,6 +6,7 @@ from app.main import app
 from app.core.database import Base, engine
 from app.security.security import AuthContext, require_user, require_read, require_write
 
+pytestmark = pytest.mark.integration
 
 # ---------------------------
 # DB setup (SQLite in-memory)
