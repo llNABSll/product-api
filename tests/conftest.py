@@ -3,7 +3,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-
+from _pytest.config import Config
 from app.main import app
 from app.core.database import Base, get_db
 
@@ -16,6 +16,13 @@ TestingSessionLocal = sessionmaker(
     bind=engine, autoflush=False, autocommit=False, future=True
 )
 
+def pytest_configure(config: Config):
+    """
+    Déclare les marqueurs personnalisés pour éviter les warnings 'Unknown mark'
+    """
+    config.addinivalue_line("markers", "unit: tests unitaires")
+    config.addinivalue_line("markers", "integration: tests d'intégration")
+    config.addinivalue_line("markers", "acceptance: tests de recette (scénarios métier)")
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_database():
@@ -46,22 +53,6 @@ def patch_rabbitmq(monkeypatch):
     monkeypatch.setattr(
         "app.infra.events.rabbitmq.RabbitMQ.publish_message", fake_publish_message
     )
-
-
-# --------------------------------------------------------------------
-# Patcher la sécurité pour bypasser Keycloak
-# --------------------------------------------------------------------
-# @pytest.fixture(autouse=True)
-# def patch_security(monkeypatch):
-#     from app.security import security
-#
-#     # Toujours un utilisateur "test" avec rôle admin
-#     fake_ctx = security.AuthContext(user="test", email="test@example.com", roles=["product:write"])
-#
-#     monkeypatch.setattr("app.security.security.require_user", lambda *a, **k: fake_ctx)
-#     monkeypatch.setattr("app.security.security.require_write", lambda *a, **k: fake_ctx)
-#     monkeypatch.setattr("app.security.security.require_read", lambda *a, **k: fake_ctx)
-
 
 # --------------------------------------------------------------------
 # Fournir un client FastAPI avec DB testée

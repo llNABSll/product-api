@@ -5,6 +5,8 @@ from app.main import app
 from app.core.database import Base, engine
 from app.security.security import AuthContext, require_read, require_write
 
+pytestmark = pytest.mark.acceptance
+
 
 @pytest.fixture(autouse=True)
 def setup_db():
