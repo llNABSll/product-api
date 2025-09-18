@@ -116,7 +116,7 @@ class ProductService:
             raise SKUAlreadyExistsError(SKU_ALREADY_EXISTS_MSG)
 
         await self.mq.publish_message(
-            "product.created", {"id": product.id, "sku": product.sku, "name": product.name}
+            "product.created", {"id": product.id, "sku": product.sku, "name": product.name, "price": product.price}
         )
         logger.info("produit créé", extra={"id": product.id, "sku": product.sku})
         return product
@@ -154,7 +154,7 @@ class ProductService:
             raise ConcurrencyConflictError(VERSION_CONFLICT_MSG)
 
         await self.mq.publish_message(
-            "product.updated", {"id": product.id, "sku": product.sku, "name": product.name}
+            "product.updated", {"id": product.id, "sku": product.sku, "name": product.name, "price": product.price}
         )
         logger.info(
             "produit mis à jour",

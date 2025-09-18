@@ -1,4 +1,4 @@
-# app/infra/events/handlers.py
+# app/infra/events/handlers.py  (PRODUCT-API)
 
 from __future__ import annotations
 
@@ -14,8 +14,7 @@ logger = logging.getLogger(__name__)
 
 def _get_service(db: Session) -> ProductService:
     """
-    Factory qui retourne un ProductService câblé avec RabbitMQ.
-    On injecte ici le singleton rabbitmq pour permettre la publication d'événements.
+    Instancie un ProductService câblé avec RabbitMQ.
     """
     from app.infra.events.rabbitmq import rabbitmq
     return ProductService(db, mq=rabbitmq)
@@ -28,7 +27,6 @@ def _get_service(db: Session) -> ProductService:
 def _clean_items(payload: dict) -> List[Dict[str, int]]:
     """
     Extrait une liste d'items {product_id, quantity} propre et typée.
-    Ignore les entrées mal formées.
     """
     raw = payload.get("items", [])
     items: List[Dict[str, int]] = []
@@ -39,7 +37,6 @@ def _clean_items(payload: dict) -> List[Dict[str, int]]:
             pid = int(it["product_id"])
             qty = int(it["quantity"])
             if qty < 0:
-                # Si jamais on reçoit une qty négative par erreur
                 logger.warning("[handlers] quantité négative ignorée: %s", it)
                 continue
             items.append({"product_id": pid, "quantity": qty})
@@ -49,9 +46,6 @@ def _clean_items(payload: dict) -> List[Dict[str, int]]:
 
 
 def _clean_deltas(payload: dict) -> List[Dict[str, int]]:
-    """
-    Extrait une liste de deltas {product_id, delta} propre et typée.
-    """
     raw = payload.get("deltas", [])
     deltas: List[Dict[str, int]] = []
     if not isinstance(raw, list):
@@ -69,20 +63,10 @@ def _clean_deltas(payload: dict) -> List[Dict[str, int]]:
 
 
 # --------------------------
-# Handlers d'événements
+# Handlers stock (inchangés)
 # --------------------------
 
 async def handle_order_created(payload: dict, db: Session):
-    """
-    Réservation initiale : décrémente le stock pour chaque item de la commande.
-    Transaction atomique : si un item est insuffisant -> rollback complet + publish order.rejected.
-    payload attendu:
-    {
-        "id": 123,
-        "status": "pending",
-        "items": [{"product_id": 3, "quantity": 2}, ...]
-    }
-    """
     svc = _get_service(db)
     order_id = payload.get("id")
     items = _clean_items(payload)
@@ -92,26 +76,22 @@ async def handle_order_created(payload: dict, db: Session):
         return
 
     try:
-        # 1) Vérifier toutes les disponibilités avant d'ajuster
         for it in items:
-            product = svc.get(it["product_id"])  # méthode sync côté service
-            available = (product.quantity or 0)
+            product = svc.get(it["product_id"])
+            available = product.quantity or 0
             if available < it["quantity"]:
                 raise InsufficientStockError(
                     f"Produit {it['product_id']} insuffisant (demande {it['quantity']}, dispo {available})"
                 )
 
-        # 2) Appliquer tous les ajustements (réservation = décrémentation)
         for it in items:
             await svc.adjust_stock(it["product_id"], -it["quantity"])
 
         db.commit()
-        logger.info("[order.created] commande %s: stock réservé pour %d items", order_id, len(items))
-
+        logger.info("[order.created] stock réservé pour commande %s", order_id)
     except InsufficientStockError as e:
         db.rollback()
-        logger.warning("[order.created] rollback commande %s -> %s", order_id, e)
-        # On notifie l'échec de réservation
+        logger.warning("[order.created] rollback %s -> %s", order_id, e)
         await svc.mq.publish_message("order.rejected", {
             "id": order_id,
             "reason": str(e),
@@ -120,50 +100,31 @@ async def handle_order_created(payload: dict, db: Session):
 
 
 async def handle_order_items_delta(payload: dict, db: Session):
-    """
-    Ajustements fins après modification des items.
-    Règle:
-      - delta > 0 : on réserve plus  -> décrémenter le stock de 'delta'
-      - delta < 0 : on libère       -> incrémenter le stock de 'abs(delta)'
-    Transaction atomique : si un delta ne passe pas (stock insuffisant), tout est rollback.
-    payload attendu:
-    {
-        "id": 123,
-        "deltas": [{"product_id": 7, "delta": +3}, {"product_id": 8, "delta": -1}],
-        "updated_at": "..."
-    }
-    """
     svc = _get_service(db)
     order_id = payload.get("id")
     deltas = _clean_deltas(payload)
 
     if not deltas:
-        logger.info("[order.items_delta] commande %s sans delta -> no-op", order_id)
+        logger.info("[order.items_delta] %s sans delta -> no-op", order_id)
         return
 
     try:
-        # 1) Vérifier toutes les réservations additionnelles avant d'appliquer quoi que ce soit
         for d in deltas:
             if d["delta"] > 0:
                 product = svc.get(d["product_id"])
-                needed = d["delta"]
-                available = (product.quantity or 0)
-                if available < needed:
+                if (product.quantity or 0) < d["delta"]:
                     raise InsufficientStockError(
-                        f"Delta insuffisant produit {d['product_id']} (besoin {needed}, dispo {available})"
+                        f"Stock insuffisant produit {d['product_id']}"
                     )
 
-        # 2) Appliquer les deltas (dans l'ordre fourni)
         for d in deltas:
-            # -delta si on réserve plus ; +abs(delta) si on libère
             await svc.adjust_stock(d["product_id"], -d["delta"])
 
         db.commit()
-        logger.info("[order.items_delta] commande %s: deltas appliqués %s", order_id, deltas)
-
+        logger.info("[order.items_delta] %s: deltas appliqués", order_id)
     except InsufficientStockError as e:
         db.rollback()
-        logger.warning("[order.items_delta] rollback commande %s -> %s", order_id, e)
+        logger.warning("[order.items_delta] rollback %s -> %s", order_id, e)
         await svc.mq.publish_message("order.rejected", {
             "id": order_id,
             "reason": str(e),
@@ -172,69 +133,67 @@ async def handle_order_items_delta(payload: dict, db: Session):
 
 
 async def handle_order_cancelled(payload: dict, db: Session):
-    """
-    Annulation de commande : réinjecter *toute* la réservation.
-    payload attendu:
-    {
-        "id": 123,
-        "items": [{"product_id": 3, "quantity": 2}, ...]
-    }
-    """
     svc = _get_service(db)
     order_id = payload.get("id")
     items = _clean_items(payload)
-
     if not items:
-        logger.info("[order.cancelled] commande %s sans items -> no-op", order_id)
         return
-
     for it in items:
         await svc.adjust_stock(it["product_id"], +it["quantity"])
-
     db.commit()
-    logger.info("[order.cancelled] commande %s: stock réinjecté pour %d items", order_id, len(items))
+    logger.info("[order.cancelled] %s: stock réinjecté", order_id)
 
 
 async def handle_order_rejected(payload: dict, db: Session):
-    """
-    Commande rejetée : ne rien réinjecter.
-    Le stock n’a pas été réservé en amont (rollback déjà fait dans handle_order_created).
-    """
-    order_id = payload.get("id")
-    logger.info("[order.rejected] commande %s rejetée -> aucun ajustement stock", order_id)
+    logger.info("[order.rejected] %s -> no stock action", payload.get("id"))
 
 
 async def handle_order_deleted(payload: dict, db: Session):
-    """
-    Suppression de commande :
-    - si statut = rejected -> no-op (aucune réservation n'avait eu lieu)
-    - sinon -> réinjecter le stock (comme cancelled).
-    """
     svc = _get_service(db)
     order_id = payload.get("id")
     status = (payload.get("status") or "").lower()
     items = _clean_items(payload)
-
     if not items:
-        logger.info("[order.deleted] commande %s sans items -> no-op", order_id)
         return
-
-    if status == "rejected":
-        logger.info("[order.deleted] commande %s supprimée (déjà rejetée) -> aucun ajustement stock", order_id)
-        return
-
-    for it in items:
-        await svc.adjust_stock(it["product_id"], +it["quantity"])
-
-    db.commit()
-    logger.info("[order.deleted] commande %s: stock réinjecté pour %d items", order_id, len(items))
+    if status != "rejected":
+        for it in items:
+            await svc.adjust_stock(it["product_id"], +it["quantity"])
+        db.commit()
+        logger.info("[order.deleted] %s: stock réinjecté", order_id)
 
 
 async def handle_order_updated(payload: dict, db: Session):
-    """
-    Mise à jour générique d'une commande.
-    Ne modifie pas le stock (réservé aux events spécifiques).
-    """
-    order_id = payload.get("id")
-    status = payload.get("status")
-    logger.info("[order.updated] commande %s status=%s -> no-op stock", order_id, status)
+    logger.info("[order.updated] %s status=%s", payload.get("id"), payload.get("status"))
+
+
+# --------------------------
+# Nouveau handler : calcul du prix
+# --------------------------
+
+async def handle_order_price_request(payload: dict, db: Session):
+    svc = _get_service(db)
+
+    customer_id = payload.get("customer_id")
+    items = _clean_items(payload)
+    if not customer_id or not items:
+        logger.warning("[order.request_price] payload invalide: %s", payload)
+        return
+
+    enriched = []
+    total = 0.0
+    for it in items:
+        prod = svc.get(it["product_id"])
+        price = float(prod.price or 0)
+        qty = it["quantity"]
+        enriched.append({
+            "product_id": it["product_id"],
+            "quantity": qty,
+            "unit_price": price
+        })
+        total += price * qty
+
+    await svc.mq.publish_message(
+        "order.price_calculated",
+        {"customer_id": customer_id, "items": enriched, "total": total},
+    )
+    logger.info("[order.request_price] prix envoyés pour client %s", customer_id)
