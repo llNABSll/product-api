@@ -280,3 +280,43 @@ async def test_handle_order_price_request_success(monkeypatch):
             "total": 16.5,
         },
     )
+
+
+@pytest.mark.asyncio
+async def test_handle_order_price_calculated_success(monkeypatch):
+    fake_svc = AsyncMock()
+    monkeypatch.setattr(handlers, "_get_service", lambda db: fake_svc)
+
+    payload = {
+        "customer_id": 1,
+        "items": [{"product_id": 42, "quantity": 5}],
+        "total": 55.0,
+    }
+    await handlers.handle_order_price_calculated(payload, db=MagicMock())
+
+    fake_svc.adjust_stock.assert_awaited_once_with(42, -5)
+
+
+@pytest.mark.asyncio
+async def test_handle_order_price_calculated_no_items(monkeypatch, caplog):
+    fake_svc = AsyncMock()
+    monkeypatch.setattr(handlers, "_get_service", lambda db: fake_svc)
+
+    await handlers.handle_order_price_calculated({"items": []}, db=MagicMock())
+    fake_svc.adjust_stock.assert_not_called()
+    assert "[order.price_calculated] aucun item" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_handle_order_price_calculated_exception(monkeypatch, caplog):
+    fake_svc = AsyncMock()
+    fake_svc.adjust_stock.side_effect = Exception("boom")
+    monkeypatch.setattr(handlers, "_get_service", lambda db: fake_svc)
+
+    payload = {"items": [{"product_id": 1, "quantity": 2}]}
+    db = MagicMock()
+
+    await handlers.handle_order_price_calculated(payload, db=db)
+
+    db.rollback.assert_called_once()
+    assert "échec décrémentation" in caplog.text
