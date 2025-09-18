@@ -22,6 +22,7 @@ from app.infra.events.handlers import (
     handle_order_items_delta,
     handle_order_cancelled,
     handle_order_rejected,
+    handle_order_price_request
 )
 
 from app.api.routes import product
@@ -75,6 +76,8 @@ async def lifespan(app: FastAPI):
                     await handle_order_deleted(payload, db)
                 elif rk == "order.updated":
                     await handle_order_updated(payload, db)
+                elif rk == "order.request_price":
+                    await handle_order_price_request(payload, db)
                 else:
                     logger.warning("[product-api] event ignoré: rk=%s payload_keys=%s", rk, list(payload.keys()))
             finally:
