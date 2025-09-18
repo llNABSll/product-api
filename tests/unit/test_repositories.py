@@ -4,6 +4,7 @@ from sqlalchemy.orm.exc import StaleDataError
 
 from app.repositories import product_repository as repo
 from app.schemas.product_schema import ProductCreate, ProductUpdate
+from unittest.mock import MagicMock
 
 # --- Helpers tri ---
 def test_resolve_sort_known_and_unknown():
@@ -33,6 +34,25 @@ def test_create_and_get_and_delete(session):
     assert deleted.id == p.id
 
     assert repo.get_product(session, p.id) is None
+
+
+def test_create_product_integrityerror(monkeypatch, session):
+    """
+    Simule une contrainte d'unicité pendant create_product.
+    Vérifie que rollback est bien appelé et que l'IntegrityError est propagée.
+    """
+    data = ProductCreate(sku="DUP", name="Dup", price=1.0, quantity=1)
+
+    # Patch commit pour lever IntegrityError
+    def bad_commit():
+        raise IntegrityError("dup", {}, None)
+
+    monkeypatch.setattr(session, "commit", bad_commit)
+    monkeypatch.setattr(session, "rollback", MagicMock())
+
+    with pytest.raises(IntegrityError):
+        repo.create_product(session, data)
+    session.rollback.assert_called_once()
 
 
 def test_list_products_filters_and_sort(session):
