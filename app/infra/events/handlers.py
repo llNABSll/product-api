@@ -197,3 +197,23 @@ async def handle_order_price_request(payload: dict, db: Session):
         {"customer_id": customer_id, "items": enriched, "total": total},
     )
     logger.info("[order.request_price] prix envoyés pour client %s", customer_id)
+    
+async def handle_order_price_calculated(payload: dict, db: Session):
+    """
+    Décrémente le stock après calcul du prix.
+    """
+    svc = _get_service(db)
+    items = _clean_items(payload)
+
+    if not items:
+        logger.info("[order.price_calculated] aucun item -> no-op")
+        return
+
+    try:
+        for it in items:
+            await svc.adjust_stock(it["product_id"], -it["quantity"])
+        db.commit()
+        logger.info("[order.price_calculated] stock décrémenté")
+    except Exception:
+        db.rollback()
+        logger.exception("[order.price_calculated] échec décrémentation")
