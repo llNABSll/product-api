@@ -16,14 +16,13 @@ from app.core.database import Base, engine
 from app.core.logging import setup_logging, access_log_middleware
 from app.infra.events.rabbitmq import rabbitmq, start_consumer
 from app.infra.events.handlers import (
-    handle_order_created,
+    handle_order_ready_for_stock,
     handle_order_deleted,
     handle_order_updated,
     handle_order_items_delta,
     handle_order_cancelled,
     handle_order_rejected,
-    handle_order_price_request,
-    handle_order_price_calculated
+    handle_order_price_request
 )
 
 from app.api.routes import product
@@ -65,9 +64,7 @@ async def lifespan(app: FastAPI):
             logger.info("[product-api] received %s: %s", rk, payload)
             db = SessionLocal()
             try:
-                if rk == "order.created":
-                    await handle_order_created(payload, db)
-                elif rk == "order.items_delta":
+                if rk == "order.items_delta":
                     await handle_order_items_delta(payload, db)
                 elif rk == "order.cancelled":
                     await handle_order_cancelled(payload, db)
@@ -79,8 +76,9 @@ async def lifespan(app: FastAPI):
                     await handle_order_updated(payload, db)
                 elif rk == "order.request_price":
                     await handle_order_price_request(payload, db)
-                elif rk == "order.price_calculated":
-                    await handle_order_price_calculated(payload, db)
+                elif rk == "order.ready_for_stock":
+                    await handle_order_ready_for_stock(payload, db)
+
                 else:
                     logger.warning("[product-api] event ignoré: rk=%s payload_keys=%s", rk, list(payload.keys()))
             finally:

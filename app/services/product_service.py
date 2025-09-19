@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
@@ -10,7 +10,7 @@ from sqlalchemy.orm.exc import StaleDataError
 from app.models.product_models import Product
 from app.schemas.product_schema import ProductCreate, ProductUpdate
 from app.repositories import product_repository as repo
-from app.infra.events.contracts import MessagePublisher 
+from app.infra.events.contracts import MessagePublisher
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ class ProductService:
 
     def __init__(self, db: Session, mq: MessagePublisher):
         self.db = db
-        self.mq = mq 
+        self.mq = mq
 
     # ----- READ -----
     def get(self, product_id: int) -> Product:
@@ -116,7 +116,8 @@ class ProductService:
             raise SKUAlreadyExistsError(SKU_ALREADY_EXISTS_MSG)
 
         await self.mq.publish_message(
-            "product.created", {"id": product.id, "sku": product.sku, "name": product.name, "price": product.price}
+            "product.created",
+            {"id": product.id, "sku": product.sku, "name": product.name, "price": product.price},
         )
         logger.info("produit créé", extra={"id": product.id, "sku": product.sku})
         return product
@@ -136,11 +137,7 @@ class ProductService:
         if expected_version is not None and current.version != expected_version:
             logger.debug(
                 "conflit de version (pré-check)",
-                extra={
-                    "id": product_id,
-                    "expected": expected_version,
-                    "actual": current.version,
-                },
+                extra={"id": product_id, "expected": expected_version, "actual": current.version},
             )
             raise ConcurrencyConflictError(VERSION_CONFLICT_MSG)
 
@@ -154,7 +151,8 @@ class ProductService:
             raise ConcurrencyConflictError(VERSION_CONFLICT_MSG)
 
         await self.mq.publish_message(
-            "product.updated", {"id": product.id, "sku": product.sku, "name": product.name, "price": product.price}
+            "product.updated",
+            {"id": product.id, "sku": product.sku, "name": product.name, "price": product.price},
         )
         logger.info(
             "produit mis à jour",
@@ -172,22 +170,60 @@ class ProductService:
         logger.info("produit supprimé", extra={"id": product.id, "sku": product.sku})
         return product
 
-    # ----- Règles métier -----
-    async def adjust_stock(self, product_id: int, delta: int) -> Product:
-        product = self.get(product_id)
-        new_qty = (product.quantity or 0) + int(delta)
+    # ----- Stock (bas niveau) -----
+    def _update_stock(self, product_id: int, new_qty: int) -> Product:
+        """Mise à jour interne du stock sans publier d'event."""
         if new_qty < 0:
-            logger.debug(
-                "ajustement stock refusé (stock insuffisant)",
-                extra={"id": product_id, "qty": product.quantity, "delta": delta},
-            )
             raise InsufficientStockError(INSUFFICIENT_STOCK_MSG)
 
-        logger.debug(
-            "ajustement stock",
-            extra={"id": product_id, "old_qty": product.quantity, "delta": delta},
+        product = repo.update_product(self.db, product_id, ProductUpdate(quantity=new_qty))
+        self.db.commit()
+        self.db.refresh(product)
+        return product
+
+    async def adjust_stock(self, product_id: int, delta: int, publish: bool = False) -> Product:
+        """
+        Ajuste le stock d'un produit.
+        - Défensif : bloque si résultat < 0
+        - Optionnel : publie un event product.updated si publish=True
+        """
+        product = self.get(product_id)
+        new_qty = (product.quantity or 0) + int(delta)
+        updated = self._update_stock(product_id, new_qty)
+
+        if publish:
+            await self.mq.publish_message(
+                "product.updated",
+                {"id": updated.id, "sku": updated.sku, "quantity": updated.quantity},
+            )
+
+        logger.info(
+            "stock ajusté",
+            extra={"id": updated.id, "delta": delta, "new_qty": updated.quantity},
         )
-        return await self.update(product_id, ProductUpdate(quantity=new_qty))
+        return updated
+
+    async def reserve_stock(self, order_id: int, items: List[Dict[str, int]]) -> None:
+        """
+        Réserve du stock pour une commande (décrémente).
+        """
+        for it in items:
+            product = self.get(it["product_id"])
+            if (product.quantity or 0) < it["quantity"]:
+                raise InsufficientStockError(
+                    f"Produit {it['product_id']} insuffisant (demande {it['quantity']}, dispo {product.quantity})"
+                )
+        for it in items:
+            await self.adjust_stock(it["product_id"], -it["quantity"])
+        logger.info("stock réservé", extra={"order_id": order_id, "items": items})
+
+    async def release_stock(self, order_id: int, items: List[Dict[str, int]]) -> None:
+        """
+        Libère le stock (par ex. annulation ou suppression).
+        """
+        for it in items:
+            await self.adjust_stock(it["product_id"], +it["quantity"])
+        logger.info("stock libéré", extra={"order_id": order_id, "items": items})
 
     async def set_active(self, product_id: int, is_active: bool) -> Product:
         product = await self.update(product_id, ProductUpdate(is_active=is_active))
@@ -208,3 +244,4 @@ class ProductService:
         logger.debug("upsert: mise à jour (SKU existant)", extra={"id": existing.id, "sku": existing.sku})
         patch = ProductUpdate(**data.model_dump())
         return await self.update(existing.id, patch)
+

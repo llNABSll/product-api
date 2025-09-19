@@ -17,7 +17,7 @@ def test_clean_items_negative_and_invalid(caplog):
     payload = {"items": [{"product_id": 1, "quantity": -5}, {"foo": "bar"}]}
     items = handlers._clean_items(payload)
     assert items == []
-    assert "quantité négative" in caplog.text or "item invalide" in caplog.text
+    assert "quantité invalide" in caplog.text or "item invalide" in caplog.text
 
 
 def test_clean_deltas_valid_and_zero():
@@ -34,47 +34,6 @@ def test_clean_deltas_invalid(caplog):
 
 
 # =====================================================
-# ORDER CREATED
-# =====================================================
-
-@pytest.mark.asyncio
-async def test_handle_order_created_success(monkeypatch):
-    fake_svc = AsyncMock()
-    fake_svc.get = MagicMock(return_value=MagicMock(quantity=10))
-    monkeypatch.setattr(handlers, "_get_service", lambda db: fake_svc)
-
-    payload = {"id": 1, "items": [{"product_id": 101, "quantity": 2}]}
-    await handlers.handle_order_created(payload, db=MagicMock())
-
-    fake_svc.adjust_stock.assert_awaited_once_with(101, -2)
-
-
-@pytest.mark.asyncio
-async def test_handle_order_created_insufficient_stock(monkeypatch, caplog):
-    fake_svc = AsyncMock()
-    fake_svc.get = MagicMock(return_value=MagicMock(quantity=3))
-    monkeypatch.setattr(handlers, "_get_service", lambda db: fake_svc)
-
-    payload = {"id": 1, "items": [{"product_id": 101, "quantity": 5}]}
-    await handlers.handle_order_created(payload, db=MagicMock())
-
-    fake_svc.adjust_stock.assert_not_called()
-    assert "[order.created] rollback 1 ->" in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_handle_order_created_empty_payload(monkeypatch, caplog):
-    fake_svc = AsyncMock()
-    monkeypatch.setattr(handlers, "_get_service", lambda db: fake_svc)
-
-    payload = {"id": 99, "items": []}
-    await handlers.handle_order_created(payload, db=MagicMock())
-
-    assert "commande 99 sans items" in caplog.text
-    fake_svc.adjust_stock.assert_not_called()
-
-
-# =====================================================
 # ORDER ITEMS DELTA
 # =====================================================
 
@@ -84,7 +43,7 @@ async def test_handle_order_items_delta_success(monkeypatch):
     fake_svc.get = MagicMock(return_value=MagicMock(quantity=10))
     monkeypatch.setattr(handlers, "_get_service", lambda db: fake_svc)
 
-    payload = {"id": 1, "deltas": [{"product_id": 101, "delta": 3}, {"product_id": 101, "delta": -1}]}
+    payload = {"order_id": 1, "deltas": [{"product_id": 101, "delta": 3}, {"product_id": 101, "delta": -1}]}
     await handlers.handle_order_items_delta(payload, db=MagicMock())
 
     fake_svc.adjust_stock.assert_any_await(101, -3)
@@ -97,7 +56,7 @@ async def test_handle_order_items_delta_insufficient(monkeypatch, caplog):
     fake_svc.get = MagicMock(return_value=MagicMock(quantity=1))
     monkeypatch.setattr(handlers, "_get_service", lambda db: fake_svc)
 
-    payload = {"id": 1, "deltas": [{"product_id": 101, "delta": 5}]}
+    payload = {"order_id": 1, "deltas": [{"product_id": 101, "delta": 5}]}
     await handlers.handle_order_items_delta(payload, db=MagicMock())
 
     fake_svc.adjust_stock.assert_not_called()
@@ -109,7 +68,7 @@ async def test_handle_order_items_delta_no_deltas(monkeypatch, caplog):
     fake_svc = AsyncMock()
     monkeypatch.setattr(handlers, "_get_service", lambda db: fake_svc)
 
-    await handlers.handle_order_items_delta({"id": 42, "deltas": []}, db=MagicMock())
+    await handlers.handle_order_items_delta({"order_id": 42, "deltas": []}, db=MagicMock())
     fake_svc.adjust_stock.assert_not_called()
     assert "[order.items_delta] 42 sans delta" in caplog.text
 
@@ -123,7 +82,7 @@ async def test_handle_order_cancelled_success(monkeypatch):
     fake_svc = AsyncMock()
     monkeypatch.setattr(handlers, "_get_service", lambda db: fake_svc)
 
-    payload = {"id": 1, "items": [{"product_id": 101, "quantity": 3}]}
+    payload = {"order_id": 1, "items": [{"product_id": 101, "quantity": 3}]}
     await handlers.handle_order_cancelled(payload, db=MagicMock())
 
     fake_svc.adjust_stock.assert_awaited_once_with(101, 3)
@@ -134,8 +93,7 @@ async def test_handle_order_cancelled_no_items(monkeypatch, caplog):
     fake_svc = AsyncMock()
     monkeypatch.setattr(handlers, "_get_service", lambda db: fake_svc)
 
-    await handlers.handle_order_cancelled({"id": 1, "items": []}, db=MagicMock())
-    assert "[order.cancelled]" not in caplog.text or "sans items" not in caplog.text
+    await handlers.handle_order_cancelled({"order_id": 1, "items": []}, db=MagicMock())
     fake_svc.adjust_stock.assert_not_called()
 
 
@@ -145,7 +103,7 @@ async def test_handle_order_cancelled_no_items(monkeypatch, caplog):
 
 @pytest.mark.asyncio
 async def test_handle_order_rejected_logs(caplog):
-    await handlers.handle_order_rejected({"id": 7}, db=MagicMock())
+    await handlers.handle_order_rejected({"order_id": 7}, db=MagicMock())
     assert "[order.rejected] 7 -> no stock action" in caplog.text
 
 
@@ -158,33 +116,30 @@ async def test_handle_order_deleted_success(monkeypatch):
     fake_svc = AsyncMock()
     monkeypatch.setattr(handlers, "_get_service", lambda db: fake_svc)
 
-    payload = {"id": 1, "status": "cancelled", "items": [{"product_id": 101, "quantity": 2}]}
+    payload = {"order_id": 1, "status": "cancelled", "items": [{"product_id": 101, "quantity": 2}]}
     await handlers.handle_order_deleted(payload, db=MagicMock())
 
     fake_svc.adjust_stock.assert_awaited_once_with(101, 2)
 
 
 @pytest.mark.asyncio
-async def test_handle_order_deleted_rejected(monkeypatch, caplog):
+async def test_handle_order_deleted_rejected(monkeypatch):
     fake_svc = AsyncMock()
     monkeypatch.setattr(handlers, "_get_service", lambda db: fake_svc)
 
-    payload = {"id": 1, "status": "rejected", "items": [{"product_id": 101, "quantity": 2}]}
+    payload = {"order_id": 1, "status": "rejected", "items": [{"product_id": 101, "quantity": 2}]}
     await handlers.handle_order_deleted(payload, db=MagicMock())
 
     fake_svc.adjust_stock.assert_not_called()
-    # ton handler ne log rien ici → on vérifie juste qu’il n’y a pas de crash
-    assert "[order.deleted]" not in caplog.text or "déjà rejetée" not in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_handle_order_deleted_no_items(monkeypatch, caplog):
+async def test_handle_order_deleted_no_items(monkeypatch):
     fake_svc = AsyncMock()
     monkeypatch.setattr(handlers, "_get_service", lambda db: fake_svc)
 
-    await handlers.handle_order_deleted({"id": 1, "status": "cancelled", "items": []}, db=MagicMock())
+    await handlers.handle_order_deleted({"order_id": 1, "status": "cancelled", "items": []}, db=MagicMock())
     fake_svc.adjust_stock.assert_not_called()
-    # idem, pas de log attendu → juste vérifier pas d’appel
 
 
 # =====================================================
@@ -196,7 +151,7 @@ async def test_handle_order_updated_cancelled(monkeypatch, caplog):
     fake_svc = AsyncMock()
     monkeypatch.setattr(handlers, "_get_service", lambda db: fake_svc)
 
-    payload = {"id": 1, "status": "cancelled", "items": [{"product_id": 101, "quantity": 4}]}
+    payload = {"order_id": 1, "status": "cancelled", "items": [{"product_id": 101, "quantity": 4}]}
     await handlers.handle_order_updated(payload, db=MagicMock())
 
     fake_svc.adjust_stock.assert_not_called()
@@ -208,7 +163,7 @@ async def test_handle_order_updated_other_status(monkeypatch, caplog):
     fake_svc = AsyncMock()
     monkeypatch.setattr(handlers, "_get_service", lambda db: fake_svc)
 
-    payload = {"id": 1, "status": "completed", "items": []}
+    payload = {"order_id": 1, "status": "completed", "items": []}
     await handlers.handle_order_updated(payload, db=MagicMock())
 
     fake_svc.adjust_stock.assert_not_called()
@@ -220,7 +175,7 @@ async def test_handle_order_updated_no_status(monkeypatch, caplog):
     fake_svc = AsyncMock()
     monkeypatch.setattr(handlers, "_get_service", lambda db: fake_svc)
 
-    payload = {"id": 1}
+    payload = {"order_id": 1}
     await handlers.handle_order_updated(payload, db=MagicMock())
 
     fake_svc.adjust_stock.assert_not_called()
@@ -236,12 +191,12 @@ def test__get_service_returns_product_service():
     assert isinstance(svc, product_service.ProductService)
 
 
+# =====================================================
+# PRICE REQUEST
+# =====================================================
+
 @pytest.mark.asyncio
 async def test_handle_order_price_request_invalid_payload(monkeypatch, caplog):
-    """
-    Doit logger un warning et ne rien publier
-    quand customer_id ou items est manquant.
-    """
     fake_svc = AsyncMock()
     fake_svc.mq = AsyncMock()
     monkeypatch.setattr(handlers, "_get_service", lambda db: fake_svc)
@@ -255,15 +210,13 @@ async def test_handle_order_price_request_invalid_payload(monkeypatch, caplog):
 
 @pytest.mark.asyncio
 async def test_handle_order_price_request_success(monkeypatch):
-    """
-    Doit enrichir les items, calculer le total et publier un event.
-    """
     fake_svc = AsyncMock()
     fake_svc.get = MagicMock(return_value=MagicMock(price=5.5))
     fake_svc.mq = AsyncMock()
     monkeypatch.setattr(handlers, "_get_service", lambda db: fake_svc)
 
     payload = {
+        "order_id": 99,
         "customer_id": 42,
         "items": [{"product_id": 10, "quantity": 3}],
     }
@@ -273,6 +226,7 @@ async def test_handle_order_price_request_success(monkeypatch):
     fake_svc.mq.publish_message.assert_awaited_once_with(
         "order.price_calculated",
         {
+            "order_id": 99,
             "customer_id": 42,
             "items": [
                 {"product_id": 10, "quantity": 3, "unit_price": 5.5}
@@ -282,41 +236,54 @@ async def test_handle_order_price_request_success(monkeypatch):
     )
 
 
+# =====================================================
+# READY FOR STOCK (ex-price_calculated)
+# =====================================================
+
 @pytest.mark.asyncio
-async def test_handle_order_price_calculated_success(monkeypatch):
+async def test_handle_order_ready_for_stock_success(monkeypatch):
     fake_svc = AsyncMock()
+    fake_svc.get = MagicMock(return_value=MagicMock(quantity=10))
+    fake_svc.mq = AsyncMock()
     monkeypatch.setattr(handlers, "_get_service", lambda db: fake_svc)
 
     payload = {
+        "order_id": 123,
         "customer_id": 1,
         "items": [{"product_id": 42, "quantity": 5}],
         "total": 55.0,
     }
-    await handlers.handle_order_price_calculated(payload, db=MagicMock())
+    await handlers.handle_order_ready_for_stock(payload, db=MagicMock())
 
     fake_svc.adjust_stock.assert_awaited_once_with(42, -5)
+    fake_svc.mq.publish_message.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_handle_order_price_calculated_no_items(monkeypatch, caplog):
+async def test_handle_order_ready_for_stock_no_items(monkeypatch, caplog):
     fake_svc = AsyncMock()
+    fake_svc.mq = AsyncMock()
     monkeypatch.setattr(handlers, "_get_service", lambda db: fake_svc)
 
-    await handlers.handle_order_price_calculated({"items": []}, db=MagicMock())
+    await handlers.handle_order_ready_for_stock({"order_id": 1, "customer_id": 2, "items": []}, db=MagicMock())
     fake_svc.adjust_stock.assert_not_called()
-    assert "[order.price_calculated] aucun item" in caplog.text
+    assert "[order.customer_validated] payload invalide" in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_handle_order_price_calculated_exception(monkeypatch, caplog):
+async def test_handle_order_ready_for_stock_insufficient(monkeypatch, caplog):
     fake_svc = AsyncMock()
-    fake_svc.adjust_stock.side_effect = Exception("boom")
+    fake_svc.get = MagicMock(return_value=MagicMock(quantity=2))
+    fake_svc.mq = AsyncMock()
     monkeypatch.setattr(handlers, "_get_service", lambda db: fake_svc)
 
-    payload = {"items": [{"product_id": 1, "quantity": 2}]}
-    db = MagicMock()
+    payload = {
+        "order_id": 5,
+        "customer_id": 1,
+        "items": [{"product_id": 42, "quantity": 10}],
+    }
+    await handlers.handle_order_ready_for_stock(payload, db=MagicMock())
 
-    await handlers.handle_order_price_calculated(payload, db=db)
-
-    db.rollback.assert_called_once()
-    assert "échec décrémentation" in caplog.text
+    fake_svc.adjust_stock.assert_not_called()
+    assert "rollback 5 ->" in caplog.text
+    fake_svc.mq.publish_message.assert_awaited_once()
